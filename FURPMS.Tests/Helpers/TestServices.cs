@@ -41,12 +41,12 @@ public static class TestServices
         new DeadlineResolver(new CycleRepository(db)),
         new CycleRepository(db));
 
-    public static ProposalService Proposals(FURPMSDbContext db, IClock clock) => new(
+    public static ProposalService Proposals(FURPMSDbContext db, IClock? clock = null) => new(
         new ProposalRepository(db),
         new CycleRepository(db),
         new MasterDataRepository(db),
         new UserRepository(db),
-        clock,
+        clock ??= new FakeClock(),
         ReviewRounds(db),
         new ReviewRepository(db),
         new BudgetPolicyService(new ProposalRepository(db), new CycleRepository(db), new MasterDataRepository(db)),
