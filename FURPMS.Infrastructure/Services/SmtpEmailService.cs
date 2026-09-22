@@ -11,6 +11,18 @@ namespace FURPMS.Infrastructure.Services;
 
 public class SmtpEmailService : IEmailService
 {
+    /// <summary>
+    /// Trần thời gian cho một lần gửi thư, tính bằng mili giây.
+    ///
+    /// <para>Phải <b>nhỏ hơn</b> thời gian chờ của trình duyệt (15 giây, xem
+    /// <c>axiosClient.ts</c>) — xem chú thích ở chỗ đặt <c>Timeout</c> để biết chuyện gì xảy ra
+    /// khi không đặt.</para>
+    ///
+    /// <para>Để là hằng số chứ không đưa vào <c>system_settings</c>: đây là tham số hạ tầng, đổi
+    /// nó không đổi bất kỳ kết luận nghiệp vụ nào.</para>
+    /// </summary>
+    private const int SmtpTimeoutMs = 10_000;
+
     private readonly INotificationRepository _notifications;
     private readonly EmailSettings _email;
     private readonly ISystemSettingService _sysSettings;
@@ -55,7 +67,17 @@ public class SmtpEmailService : IEmailService
             using var client = new SmtpClient(_email.SmtpServer, _email.SmtpPort)
             {
                 Credentials = new NetworkCredential(_email.SmtpUsername, _email.SmtpPassword),
-                EnableSsl = true
+                EnableSsl = true,
+
+                // BẮT BUỘC phải đặt. Mặc định của .NET là 100 GIÂY, trong khi trình duyệt bỏ cuộc
+                // sau 15 giây (axiosClient.ts). Tạo tài khoản ghi DB xong mới gửi thư chào mừng và
+                // có `await` — nên khi cổng 587 ra ngoài bị chặn hoặc chậm (hay gặp trên nền tảng
+                // triển khai), luồng đứng ở đây, trình duyệt báo "Không kết nối được máy chủ",
+                // NHƯNG TÀI KHOẢN ĐÃ ĐƯỢC TẠO. Admin tưởng hỏng, bấm lại, lần hai ăn 409.
+                //
+                // 10 giây < 15 giây của trình duyệt ⇒ hỏng thì hỏng gọn: catch ở dưới nuốt lỗi,
+                // ghi `email_logs` là FAILED, API vẫn trả 200 và tài khoản vẫn đúng.
+                Timeout = SmtpTimeoutMs
             };
 
             // Dev/demo: hứng hộ mail của các địa chỉ KHÔNG CÓ THẬT (tài khoản seed) về một
