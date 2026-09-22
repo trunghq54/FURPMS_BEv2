@@ -155,6 +155,16 @@ public static class TestServices
         NullLogger<DuplicateCheckService>.Instance,
         TestNotifier.Create(db));
 
+    /// <param name="embed">
+    /// Vector trả về cho câu hỏi. Bỏ trống thì mọi lần gọi mô hình nhúng sẽ ném lỗi — dùng để
+    /// chứng minh nhánh "kho rỗng" không hề gọi model (không tốn quota).
+    /// </param>
+    public static SemanticSearchService SemanticSearch(
+        FURPMSDbContext db, Func<string, float[]>? embed = null) => new(
+        db,
+        new TestGeminiService(embed),
+        NullLogger<SemanticSearchService>.Instance);
+
     public static CycleService Cycles(FURPMSDbContext db) => new(
         new CycleRepository(db),
         new MasterDataRepository(db),

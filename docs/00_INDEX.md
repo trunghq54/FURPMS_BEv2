@@ -52,6 +52,13 @@
 | `API_CONTRACT.md` | **Giao kèo FE↔BE**: mọi endpoint, quyền, request/response, ghi chú thay đổi | Khi thêm/sửa endpoint, hoặc FE hỏi "gọi cái gì" |
 | `ERD_v3_Project_Centric.dbml` | **Sơ đồ DB duy nhất** (~56 bảng, Project-centric) | Khi đụng schema |
 | `Review2_Diagrams.md` · `RP4_Diagrams.md` | Use case / sequence / activity / state machine | Khi sửa luồng thì phải sửa theo |
+| **`RP1_Sua_Chu.md`** | **Phần CHỮ của Report 1**: 6 nhóm tính năng mới đã code xong nhưng RP1 không nhắc, Teams+Outlook+Calendar nhắc 6 lần mà 0 dòng code, LI-07 mâu thuẫn với rà trùng, semantic search trả dữ liệu giả | Khi sửa file `.docx` của RP1 |
+| **`RP2_Sua_Chu.md`** | **Phần CHỮ của Report 2**: Table 11 sai 6 dòng công nghệ (SQL Server/Azure/Meet API/model Gemini cũ), Table 8 RAM còn 5 ô `D` của thành viên đã rời, kế hoạch kết thúc 06/09 mà dự án vẫn chạy. Kèm kế hoạch 3 ngày tới hạn 25/09 | Khi sửa file `.docx` của RP2 |
+| **`RP4_Hinh_Da_Sua.md`** | **17 khối mermaid** (7 class + 10 sequence) dựng lại từ code thật cho Report 4 — đã verify tên lớp, tên thuộc tính entity, route `[Http*]`, tên component FE | Khi vẽ/sửa hình RP4. Dán thẳng vào draw.io qua `Arrange → Insert → Advanced → Mermaid` |
+| **`RP4_Sua_Chu.md`** | **Phần CHỮ của Report 4**: Table 1 có 10 dòng bịa (mobile, AutoMapper, Extension/), 17 đoạn diễn giải cần thêm, mục State Machine còn thiếu, ERD phải chụp từ DB thật | Khi sửa file `.docx` của RP4 |
+| **`RP7_Gop_Bai.md`** | **Cách gộp RP1-6 vào Final Report**: cấu trúc RP7 KHÔNG trùng RP1-6 (§II.3/§II.4 đổi tên, §IV đảo thứ tự Database xuống cuối), vì sao phải copy-paste chứ không INCLUDETEXT, 3 bẫy Word khi dán, template còn dữ liệu mẫu `PWM - Psychology website`. Kèm lịch 3 ngày tới hạn 25/09 | Khi bắt đầu gộp RP7 |
+| **`RP7_Phu_Luc_De_Danh.md`** | **Bảng từ viết tắt + nguồn tham khảo** soạn sẵn cho Final Report. **Cố ý KHÔNG đưa vào RP4** vì template RP4 không có hai mục đó (cẩm nang §1.1 phạt thêm mục lạ). Kèm quy tắc quyết định khi mở template RP7 | Khi bắt đầu làm RP7 |
+| **`CAM_NANG_TRANH_LOI.md`** | **Cẩm nang tránh lỗi** dạng markdown (bản gốc: `Cam-nang-tranh-loi-Capstone-SE.pdf`) — §2 là 8 loại sơ đồ, §12 checklist D-14→D-1, §13 20 câu hỏi hay gặp, §14 bảng tự chấm 15 tiêu chí | **Đọc trước mọi đợt sửa tài liệu.** Mọi trích dẫn "§x.y" trong các doc khác đều trỏ về đây |
 | `SYSTEM_REVIEW.md` | Rà soát hệ thống + danh sách mã **CỐ Ý fix cứng** (không linh hoạt hoá) | ⚠️ Quan trọng khi bị hỏi về hardcode — xem §cẩm nang |
 
 ---

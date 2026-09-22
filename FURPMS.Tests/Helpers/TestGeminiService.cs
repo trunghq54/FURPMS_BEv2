@@ -11,6 +11,14 @@ namespace FURPMS.Tests.Helpers;
 /// </summary>
 public class TestGeminiService : IGeminiService
 {
+    private readonly Func<string, float[]>? _embed;
+
+    /// <param name="embed">
+    /// Cho phép test cần vector (vd tìm kiếm ngữ nghĩa) trả về một vector định sẵn.
+    /// Bỏ trống thì <see cref="EmbedAsync"/> vẫn ném lỗi như cũ — mặc định là "không được gọi".
+    /// </param>
+    public TestGeminiService(Func<string, float[]>? embed = null) => _embed = embed;
+
     public bool IsConfigured => false;
     public string EmbeddingModel => "test-embedding-model";
 
@@ -25,5 +33,7 @@ public class TestGeminiService : IGeminiService
         throw new NotSupportedException("Test không được gọi Gemini thật.");
 
     public Task<float[]> EmbedAsync(string text, CancellationToken ct = default) =>
-        throw new NotSupportedException("Test không được gọi Gemini thật.");
+        _embed is null
+            ? throw new NotSupportedException("Test không được gọi Gemini thật.")
+            : Task.FromResult(_embed(text));
 }

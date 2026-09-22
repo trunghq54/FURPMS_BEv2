@@ -1042,7 +1042,7 @@ và **`isTotalValid`** (`totalCriteriaScore === maxTotalScore`).
 ### ⚠️ FE đang gọi nhưng BE CHƯA implement (trả 404) — cần làm BE hoặc ẩn ở FE
 | FE gọi | Mục đích | Trạng thái BE |
 |---|---|---|
-| `POST /api/ai/search` | Tìm kiếm ngữ nghĩa (trang PI) | ❌ Chưa làm — cần embedding + `semantic_search_vector` |
+| `POST /api/ai/search` | Tìm kiếm ngữ nghĩa (trang PI) | ✅ **Đã làm 22/09** — `SemanticSearchService`, dùng chung kho vector với rà trùng lặp. Xem §13.2m |
 | ~~`POST /api/ai/suggest-reviewers`~~ | Gợi ý thành viên hội đồng | ✅ **Đã làm 26/08 bằng truy vấn thuần** — `GET /api/councils/candidates` (§13.2k). Endpoint `/ai/*` này chưa bao giờ tồn tại; mã gọi vào nó ở giao diện đã xoá |
 | `POST /api/ai/similarity-check` | Trùng lặp với đặt hàng | ❌ Chưa làm — **không màn nào dùng**, nên xoá cả 2 đầu |
 
@@ -1358,6 +1358,57 @@ Chi tiết đầy đủ — metric, ngưỡng ở đâu ra, giới hạn của p
 | `GET /api/proposals/{id}/duplicate-check` | như sổ quyết định | Tầng 1: top-K đề tài giống nhất. **Đọc thuần, không gọi AI** |
 | `POST /api/proposals/{id}/duplicate-check/explain?force=` | Staff, Admin | Tầng 2: AI giải thích giống ở chỗ nào. Có cache thì trả cache |
 | `POST /api/proposals/{id}/duplicate-check/review` | Staff, Admin | Phòng QLKH chốt kết luận → sổ quyết định |
+
+---
+
+### 13.2m. Tìm kiếm ngữ nghĩa — ✅ ĐÃ CÓ (22/09)
+
+`POST /api/ai/search` — mọi vai đã đăng nhập.
+
+```jsonc
+// request
+{ "query": "dự đoán sinh viên bỏ học", "topK": 10 }   // topK không bắt buộc, mặc định 10, trần 50
+
+// response
+{ "success": true, "data": {
+  "query": "dự đoán sinh viên bỏ học",
+  "indexedCount": 42,              // số đề cương ĐANG có vector
+  "modelUsed": "gemini-embedding-001",
+  "hits": [
+    { "id": "…", "title": "Cảnh báo sớm nguy cơ thôi học", "snippet": "…",
+      "relevance": 91.4,           // cosine × 100, thang 0–100
+      "type": "proposal", "projectCode": "DT-A", "piName": "…", "cycleYear": 2026 }
+  ]
+}}
+```
+
+| Điều cần nhớ | Vì sao |
+|---|---|
+| **`indexedCount = 0` ≠ không tìm thấy** | Kho vector rỗng là chuyện khác hẳn. Giao diện nói nhầm thì người dùng đổi câu hỏi mãi rồi kết luận hệ thống hỏng |
+| **Chỉ tìm đề cương đã nộp** | `EmbeddingWorker` chỉ xếp hàng đề cương. **Đơn đặt hàng nghiên cứu chưa được vector hoá** — đừng hứa trong tài liệu |
+| **Không tốn thêm quota vector hoá** | Dùng chung `semantic_search_vectors` với rà trùng lặp. Mỗi lần tìm chỉ tốn 1 lần nhúng câu hỏi |
+| **Tất định** | Cosine trên vector, không có mô hình sinh chữ nào "phán". Cùng câu hỏi → cùng thứ hạng |
+| `relevance` **không phải xác suất** | Không so sánh được giữa hai câu hỏi khác nhau; chỉ để xếp thứ tự trong một lần tìm |
+| `topK` **không nằm trong `system_settings`** | Nó chỉ đổi số dòng hiển thị, không đổi kết luận nào — tham số giao diện, không phải tham số nghiệp vụ |
+| **503 khi model nhúng lỗi**, không phải 500 | Dịch vụ ngoài tạm hỏng, người dùng thử lại được |
+
+Vector lệch số chiều (đổi model mà quên vector hoá lại) → `CosineSimilarity` trả 0, kết quả rỗng
+và **ghi cảnh báo vào log**, không ném lỗi vào mặt người dùng.
+
+**Đã chạy thử thật 22/09** (BE 5068 + FE 5173 + PostgreSQL 5433, Gemini thật, 15 vector
+`gemini-embedding-001` 3072 chiều):
+
+| Câu hỏi | Kết quả |
+|---|---|
+| *"dự đoán sinh viên có nguy cơ bỏ học"* | 85.1 · 83.4 · 83.2 đều đúng chủ đề, rồi tụt xuống 71.6 cho đề tài chỉ liên quan xa |
+| *"machine learning for student dropout prediction"* (tiếng Anh, kho tiếng Việt) | ra đúng ba đề tài trên ở 75.9 / 75.7 / 75.0 — **khớp xuyên ngôn ngữ**, tìm theo từ khoá không thể làm được |
+| *"nuôi tôm nước lợ ở đồng bằng sông Cửu Long"* (lạc đề) | cao nhất chỉ 58.2 — dải điểm tách bạch rõ với 85.1 ở trên |
+| câu hỏi rỗng | 400 `SEARCH_QUERY_EMPTY` |
+
+⚠️ **Không có sàn điểm tối thiểu.** Câu hỏi lạc đề vẫn trả về đủ `topK` dòng, chỉ khác là điểm
+thấp và thanh màu xám. Đây là **chủ ý**: cosine giữa hai văn bản cùng ngôn ngữ gần như không bao
+giờ bằng 0, nên tự đặt một cái sàn là thêm một con số phải giải thích nguồn gốc (§4 hardcode).
+Chính con số `relevance` là tín hiệu, và giao diện đã tô màu theo nó.
 | `POST /api/admin/reindex-embeddings?max=` | Admin | Vector hoá kho; bỏ qua bản nội dung không đổi |
 | `POST /api/admin/embed-eval-set?force=` | Admin, **ngoài Production** | Vector hoá bộ gán nhãn để đo metric |
 

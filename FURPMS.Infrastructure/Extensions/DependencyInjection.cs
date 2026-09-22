@@ -51,6 +51,8 @@ public static class DependencyInjection
         services.AddScoped<IProjectDecisionService, ProjectDecisionService>();
         services.AddScoped<ICouncilCandidateService, CouncilCandidateService>();
         services.AddScoped<IDuplicateCheckService, DuplicateCheckService>();
+        // Dùng chung kho vector với rà trùng lặp — xem ISemanticSearchService.
+        services.AddScoped<ISemanticSearchService, SemanticSearchService>();
         services.AddSingleton<IEmbeddingQueue, EmbeddingQueue>();
         services.AddScoped<ICycleService, CycleService>();
         services.AddScoped<IProposalService, ProposalService>();
