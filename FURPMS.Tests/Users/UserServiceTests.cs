@@ -87,6 +87,61 @@ public class UserServiceTests
         Assert.Empty(await db.Users.ToListAsync());
     }
 
+    /// <summary>
+    /// Xoá mềm một người rồi tạo lại đúng email đó. Trước 29/09 kiểm tra trùng bỏ qua tài khoản đã
+    /// xoá, INSERT dòng mới đâm vào UNIQUE(email) trên Postgres ⇒ 500 trên bản deploy. InMemory
+    /// không có UNIQUE nên test không bắt được 500 — thay vào đó chứng minh <b>không có dòng thứ
+    /// hai</b> nào được thêm, tức là không còn đường đâm vào UNIQUE.
+    /// </summary>
+    [Fact]
+    public async Task Create_EmailOfDeletedUser_RestoresSameRowWithNewDetails()
+    {
+        var (db, staff, _) = await SeedAsync();
+        var admin = await db.Roles.SingleAsync(r => r.Name == "Admin");
+        var old = new User
+        {
+            Email = "back@example.com", FullName = "Tên cũ", Status = "INACTIVE", PasswordHash = "old-hash",
+            IsDeleted = true, DeletedAt = DateTime.UtcNow, DeletedBy = Guid.NewGuid()
+        };
+        db.Users.Add(old);
+        db.UserRoles.Add(new UserRole { UserId = old.Id, RoleId = admin.Id });
+        await db.SaveChangesAsync();
+
+        var result = await Service(db).CreateUserAsync(new CreateUserRequest
+        {
+            Email = "back@example.com", FullName = "Tên mới", TemporaryPassword = "TempPass123",
+            Roles = new() { staff.Id }
+        }, Guid.NewGuid());
+
+        Assert.Equal(old.Id, result.Id);
+        var rows = await db.Users.IgnoreQueryFilters().Where(u => u.Email == "back@example.com").ToListAsync();
+        var user = Assert.Single(rows);
+        Assert.False(user.IsDeleted);
+        Assert.Null(user.DeletedAt);
+        Assert.Equal(UserStatus.Active, user.Status);
+        Assert.Equal("Tên mới", user.FullName);
+        Assert.True(BCrypt.Net.BCrypt.Verify("TempPass123", user.PasswordHash));
+        // Vai cũ (Admin) KHÔNG được sống lại theo — chỉ vai trên form mới.
+        Assert.Equal(new[] { "Staff" }, result.Roles);
+    }
+
+    [Fact]
+    public async Task Create_SavesUnitAndDegreeFromForm()
+    {
+        var (db, staff, unit) = await SeedAsync();
+
+        var result = await Service(db).CreateUserAsync(new CreateUserRequest
+        {
+            Email = "unit@example.com", FullName = "Có đơn vị", TemporaryPassword = "TempPass123",
+            Department = unit.Name, AcademicDegree = 1, Roles = new() { staff.Id }
+        }, Guid.NewGuid());
+
+        var user = await db.Users.SingleAsync(u => u.Id == result.Id);
+        Assert.Equal(unit.Id, user.UnitId);
+        var profile = await db.AcademicProfiles.SingleAsync(p => p.UserId == result.Id);
+        Assert.Equal("Thạc sĩ", profile.DegreeLevel);
+    }
+
     [Fact]
     public async Task Update_ValidUser_ChangesProfileUnitDegreeAndRoles()
     {

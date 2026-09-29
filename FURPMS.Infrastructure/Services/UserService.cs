@@ -106,8 +106,15 @@ public class UserService : IUserService
         if (string.IsNullOrWhiteSpace(request.TemporaryPassword))
             throw new ArgumentException("Phải nhập mật khẩu tạm.");
 
-        var exists = await _users.Query().AnyAsync(u => u.Email == request.Email && !u.IsDeleted);
-        if (exists)
+        // Phải nhìn cả tài khoản ĐÃ XOÁ: xoá chỉ là xoá mềm, dòng cũ vẫn giữ email, mà cột email có
+        // chỉ mục UNIQUE trên toàn bảng. Trước 29/09 chỗ này chỉ kiểm tài khoản còn sống ⇒ xoá một
+        // người rồi tạo lại đúng email đó thì lọt qua kiểm tra, đâm vào UNIQUE lúc INSERT và trả 500
+        // "Hệ thống gặp sự cố ngoài dự kiến" (gặp thật trên bản deploy).
+        var existing = await _users.Query()
+            .IgnoreQueryFilters()
+            .Include(u => u.UserRoles)
+            .FirstOrDefaultAsync(u => u.Email == request.Email);
+        if (existing is { IsDeleted: false })
             throw new InvalidOperationException($"Đã có tài khoản dùng email {request.Email}.");
 
         foreach (var roleId in request.Roles)
@@ -117,16 +124,36 @@ public class UserService : IUserService
                 throw new KeyNotFoundException("Không tìm thấy vai trò.");
         }
 
-        var user = new User
+        var passwordHash = BCrypt.Net.BCrypt.HashPassword(request.TemporaryPassword, workFactor: 12);
+        User user;
+        if (existing != null)
         {
-            Email = request.Email,
-            FullName = request.FullName,
-            Phone = request.PhoneNumber,
-            PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.TemporaryPassword, workFactor: 12),
-            Status = UserStatus.Active
-        };
-
-        await _users.AddAsync(user);
+            // Cùng email = cùng một người ⇒ KHÔI PHỤC dòng cũ chứ không tạo dòng mới. Hồ sơ cũ
+            // (đề tài, điểm chấm, sổ quyết định) vẫn trỏ về đúng người, và không đụng UNIQUE.
+            // Thông tin, mật khẩu, vai lấy hết theo form mới — như một tài khoản vừa tạo.
+            user = existing;
+            user.IsDeleted = false;
+            user.DeletedAt = null;
+            user.DeletedBy = null;
+            user.FullName = request.FullName;
+            user.Phone = request.PhoneNumber;
+            user.PasswordHash = passwordHash;
+            user.Status = UserStatus.Active;
+            user.UpdatedAt = DateTime.UtcNow;
+            _users.RemoveUserRoles(existing.UserRoles.ToList());
+        }
+        else
+        {
+            user = new User
+            {
+                Email = request.Email,
+                FullName = request.FullName,
+                Phone = request.PhoneNumber,
+                PasswordHash = passwordHash,
+                Status = UserStatus.Active
+            };
+            await _users.AddAsync(user);
+        }
         await _users.SaveChangesAsync();
 
         // Form tạo có ô Đơn vị + Học vị nhưng trước 29/09 chỉ màn SỬA mới lưu hai trường này — tạo
