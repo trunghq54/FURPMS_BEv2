@@ -67,6 +67,33 @@ public class CloudinaryFileStorage : IFileStorage
     /// <summary>Với raw, public_id GỒM cả phần mở rộng — giữ nguyên blobName cho khớp DB.</summary>
     private string PublicId(string blobName) => $"{_folder}/{blobName}";
 
+    /// <summary>
+    /// Các public_id có thể đang chứa file. Thứ hai là tên HỎNG mà file upload từ ~25/09 tới 29/09
+    /// bị Cloudinary gán (`…/x.docx.docx"`, xem <see cref="SaveAsync"/>). Thử thêm tên đó thì mọi
+    /// tài liệu đã nộp trong khoảng này mở lại được luôn — không bắt người dùng nộp lại, không phải
+    /// sửa DB hay đổi tên hàng loạt trên Cloudinary.
+    /// </summary>
+    private IEnumerable<string> CandidatePublicIds(string blobName)
+    {
+        yield return PublicId(blobName);
+        var ext = Path.GetExtension(blobName);
+        if (!string.IsNullOrEmpty(ext))
+            yield return $"{PublicId(blobName)}{ext}\"";
+    }
+
+    private static string? ReadPublicId(string uploadResponse)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(uploadResponse);
+            return doc.RootElement.TryGetProperty("public_id", out var id) ? id.GetString() : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>URL đọc, dựng lại được từ blobName (bỏ phần version) — khỏi lưu thêm cột nào.</summary>
     private string DeliveryUrl(string blobName) =>
         $"https://res.cloudinary.com/{_cloudName}/raw/upload/{PublicId(blobName)}";
@@ -88,11 +115,11 @@ public class CloudinaryFileStorage : IFileStorage
     /// <para>Cách này còn <b>an toàn hơn</b> chỗ khác: tài liệu vẫn không phát hành công khai, ai
     /// có URL cũng không tải được — muốn lấy phải qua BE, mà BE thì có <c>[Authorize]</c>.</para>
     /// </summary>
-    private string SignedDownloadUrl(string blobName)
+    private string SignedDownloadUrl(string publicId)
     {
         var signed = new SortedDictionary<string, string>
         {
-            ["public_id"] = PublicId(blobName),
+            ["public_id"] = publicId,
             ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(),
             ["type"] = "upload",
         };
@@ -120,7 +147,18 @@ public class CloudinaryFileStorage : IFileStorage
         var fileContent = new StreamContent(ms);
         fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse(
             string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType);
-        form.Add(fileContent, "\"file\"", $"\"{Path.GetFileName(blobName)}\"");
+        // Tự dựng Content-Disposition, KHÔNG dùng form.Add(content, name, fileName): overload đó
+        // ghi thêm `filename*=utf-8''%22x.docx%22` — mã hoá LUÔN cả hai dấu nháy. Từ khoảng 25/09
+        // Cloudinary đọc `filename*`, lấy đuôi `docx"` rồi NỐI vào public_id ⇒ file nằm ở
+        // `…/x.docx.docx"` trong khi BE đi tìm `…/x.docx` ⇒ mọi tài liệu nộp mới đều không mở được,
+        // AI cũng không đọc được (gặp thật 29/09 trên bản deploy). Đã upload thử để đo: có
+        // `filename*` → sai tên; chỉ `filename="…"` → đúng tên.
+        fileContent.Headers.ContentDisposition = new ContentDispositionHeaderValue("form-data")
+        {
+            Name = "\"file\"",
+            FileName = $"\"{Path.GetFileName(blobName)}\""
+        };
+        form.Add(fileContent);
 
         // StringContent mặc định kèm "Content-Type: text/plain; charset=utf-8" cho từng field;
         // Cloudinary bỏ qua các field đó ⇒ tưởng là unsigned upload rồi trả 400. Phải gỡ header.
@@ -156,6 +194,13 @@ public class CloudinaryFileStorage : IFileStorage
             if (!resp.IsSuccessStatusCode)
                 throw new InvalidOperationException(
                     $"Không tải được file lên Cloudinary ({(int)resp.StatusCode}): {Trim(body)}");
+
+            // Cloudinary lặng lẽ đổi public_id là hỏng kiểu KHÔNG AI THẤY: nộp báo thành công, tới
+            // lúc mở mới 404. Kiểm ngay tại đây để lần sau lỗi lộ ra lúc nộp chứ không phải lúc chấm.
+            var actual = ReadPublicId(body);
+            if (actual != null && actual != PublicId(blobName))
+                throw new InvalidOperationException(
+                    $"Cloudinary lưu file dưới tên khác dự kiến ('{actual}' thay vì '{PublicId(blobName)}') — file sẽ không mở lại được.");
         }
 
         // Cố ý KHÔNG trả secure_url của Cloudinary ra ngoài: caller ghi giá trị này vào
@@ -172,19 +217,24 @@ public class CloudinaryFileStorage : IFileStorage
     public async Task<byte[]?> ReadAllBytesAsync(string blobName, string? storageUrl, CancellationToken ct = default)
     {
         // storageUrl bỏ qua có chủ ý — nó là URL tải của BE, không phải của Cloudinary.
-        try
+        foreach (var publicId in CandidatePublicIds(blobName))
         {
-            // Qua API có chữ ký, KHÔNG qua CDN: file raw bị chặn phát hành (xem SignedDownloadUrl).
-            using var resp = await _http.GetAsync(SignedDownloadUrl(blobName), ct);
-            if (resp.IsSuccessStatusCode)
-                return await resp.Content.ReadAsByteArrayAsync(ct);
-        }
-        catch (HttpRequestException)
-        {
-            // Mất mạng / DNS hỏng KHÔNG được thành 500. Thử đĩa, không có thì trả null → 404.
-        }
-        catch (TaskCanceledException)
-        {
+            try
+            {
+                // Qua API có chữ ký, KHÔNG qua CDN: file raw bị chặn phát hành (xem SignedDownloadUrl).
+                using var resp = await _http.GetAsync(SignedDownloadUrl(publicId), ct);
+                if (resp.IsSuccessStatusCode)
+                    return await resp.Content.ReadAsByteArrayAsync(ct);
+            }
+            catch (HttpRequestException)
+            {
+                // Mất mạng / DNS hỏng KHÔNG được thành 500. Thử đĩa, không có thì trả null → 404.
+                break;
+            }
+            catch (TaskCanceledException)
+            {
+                break;
+            }
         }
 
         // Không lấy được từ Cloudinary ⇒ có thể là file cũ còn nằm trên đĩa.
@@ -194,10 +244,11 @@ public class CloudinaryFileStorage : IFileStorage
     public async Task DeleteAsync(string blobName, string? storageUrl, CancellationToken ct = default)
     {
         var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_apiKey}:{_apiSecret}"));
+        var ids = string.Join("&", CandidatePublicIds(blobName)
+            .Select(id => $"public_ids[]={Uri.EscapeDataString(id)}"));
         using var req = new HttpRequestMessage(
             HttpMethod.Delete,
-            $"https://api.cloudinary.com/v1_1/{_cloudName}/resources/raw/upload" +
-            $"?public_ids[]={Uri.EscapeDataString(PublicId(blobName))}");
+            $"https://api.cloudinary.com/v1_1/{_cloudName}/resources/raw/upload?{ids}");
         req.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
 
         // Xoá hụt trên Cloudinary không được làm hỏng nghiệp vụ — DB đã đánh dấu IsDeleted.

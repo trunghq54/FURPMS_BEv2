@@ -106,6 +106,27 @@ công khai, ai có URL cũng không tải được — muốn lấy phải qua B
 > bấm mở lại. Ra 404 thì đúng lỗi này, deploy bản vá là hết. **Đây là lỗi chặn demo**: hội đồng
 > không mở được đề cương thì không chấm được gì.
 
+### 1.4b 🔴 Cloudinary lưu file dưới tên HỎNG `…/x.docx.docx"` — tài liệu nộp từ ~25/09 không mở được (29/09)
+
+**Triệu chứng:** nộp đề cương báo thành công, nhưng hội đồng mở ra thấy *"Không tải được bản xem
+trước"*, và AI hỗ trợ chấm ghi *"chưa có file đề cương đính kèm"*. Cột `storage_container` vẫn ghi
+`Cloudinary` nên rất dễ tưởng lưu trữ ổn.
+
+**Nguyên nhân (đã đo bằng upload thử):** `MultipartFormDataContent.Add(content, name, fileName)`
+tự ghi thêm `filename*=utf-8''%22x.docx%22` — mã hoá luôn cả dấu nháy. Khoảng giữa 15/09 và 25/09
+Cloudinary bắt đầu đọc `filename*`, lấy đuôi `docx"` và **nối vào public_id** ⇒ file nằm ở
+`furpms-dev/proposals/{id}/{guid}.docx.docx"`, còn BE tìm `…/{guid}.docx`. File trước 15/09 vẫn đúng tên.
+
+**Đã sửa (`CloudinaryFileStorage`):** tự dựng Content-Disposition chỉ có `filename="…"`; kiểm
+`public_id` Cloudinary trả về, lệch là báo lỗi NGAY lúc nộp; khi đọc/xoá thử thêm tên hỏng ⇒ file đã
+nộp trong khoảng lỗi **mở lại được, không phải nộp lại**. Đã chạy thật trên máy local (cùng cloud
+`dq6dp3g3v`, cùng thư mục `furpms-dev` với Railway): nộp mới → tải về đúng từng byte; file tên hỏng
+của bản deploy → tải được. Đề tài nào đã chạy AI lúc file chưa đọc được thì bấm **Chạy lại**.
+
+> Backend thật hiện ở Railway project **`delightful-intuition`**, URL
+> `furpmsbev2-production-04bd.up.railway.app` — KHÔNG còn là `furpmsbev2-production.up.railway.app`
+> (project `abundant-endurance`) như các chỗ khác trong docs/`.env` ghi.
+
 ### 1.5 🔴 Rule #15 đã được VIẾT LẠI (25/08) — đọc trước khi đụng bất cứ chỗ nào có tiền
 
 Câu cũ — *"Tài chính = minh chứng, hệ thống KHÔNG quản tiền… scope = **strip + ẩn nav/UI tiền**"* —
