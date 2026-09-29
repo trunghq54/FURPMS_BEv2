@@ -659,7 +659,7 @@ RP7 17.066. **Ba file hội đồng gọi tên đúng là ba file mỏng nhất/
 thành gì · bằng chứng trong code*:
 
 - **RP4 (SDD) — nguy hiểm nhất.** System Architecture sai 6 chỗ (nhóm đã tự soát ở
-  `RA_SOAT_BAO_CAO_RP1-7.md:152-175` từ 16/08 **nhưng chưa sửa**): vẽ **SQL Server** (thật:
+  `archive/nop-25-09/RA_SOAT_BAO_CAO_RP1-7.md:152-175` từ 16/08 **nhưng chưa sửa**): vẽ **SQL Server** (thật:
   PostgreSQL) · **Google Meet** + **Google Calendar** (0 file, không tích hợp) · **Google SMTP**
   (thật: Brevo) · **thiếu Cloudinary** (7 file dùng) · **React Native + Expo mobile** (không có mã
   nguồn nào). Và nó đang là *bộ sưu tập logo* nối vào một hộp giữa, không thể hiện ai gọi ai.

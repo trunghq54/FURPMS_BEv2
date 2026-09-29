@@ -77,6 +77,9 @@ public class SmtpEmailService : IEmailService
                 //
                 // 10 giây < 15 giây của trình duyệt ⇒ hỏng thì hỏng gọn: catch ở dưới nuốt lỗi,
                 // ghi `email_logs` là FAILED, API vẫn trả 200 và tài khoản vẫn đúng.
+                //
+                // ⚠ Dòng này chỉ phủ `Send` đồng bộ — trần thật cho `SendMailAsync` là
+                // CancellationToken ở chỗ gửi bên dưới.
                 Timeout = SmtpTimeoutMs
             };
 
@@ -104,7 +107,18 @@ public class SmtpEmailService : IEmailService
             message.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(
                 BuildHtml(subject, body, link), null, "text/html"));
 
-            await client.SendMailAsync(message);
+            // `Timeout` ở trên CHỈ có tác dụng với `Send` đồng bộ — `SendMailAsync` bỏ qua nó hoàn
+            // toàn (tài liệu .NET ghi rõ "synchronous Send call"). Bản sửa 22/09 chỉ đặt `Timeout`
+            // nên thực ra chưa chặn được gì: 29/09 tạo tài khoản vẫn treo quá 15 giây, trình duyệt
+            // báo lỗi, admin bấm lại và ăn "Đã có tài khoản dùng email…". Trần thời gian cho bản
+            // async phải đi qua CancellationToken.
+            using var cts = new CancellationTokenSource(SmtpTimeoutMs);
+            await client.SendMailAsync(message, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            status = "FAILED";
+            errorMessage = $"Máy chủ thư không phản hồi sau {SmtpTimeoutMs / 1000} giây.";
         }
         catch (Exception ex)
         {

@@ -3,7 +3,13 @@
 > Xếp theo **tác dụng thực tế**, không theo bảng chữ cái. Đọc từ trên xuống: tầng 1 là thứ **phải
 > tuân theo**, tầng 5 là thứ chỉ tra khi cần.
 >
-> Cập nhật 25/08/2026. Mỗi lần thêm/xoá file trong `docs/` phải sửa file này.
+> Cập nhật 29/09/2026. Mỗi lần thêm/xoá file trong `docs/` phải sửa file này.
+>
+> **29/09 — ĐÃ NỘP TÀI LIỆU (Edunext đóng 10:00 25/09), bảo vệ lần 2 ngày 04/10/2026.** Các file
+> hướng dẫn sửa báo cáo (`RP*_Sua_Chu`, `RP7_*`, `Record_Of_Changes`, checklist nộp…) đã chuyển sang
+> [`archive/nop-25-09/`](archive/nop-25-09/README.md) — tra ở đó khi bị hỏi "báo cáo ghi X sao code
+> làm Y", **không sửa báo cáo nữa**. Việc còn lại trước bảo vệ: `KICH_BAN_DEMO.md`,
+> `CAM_NANG_TRANH_LOI.md`, `CHUAN_BI_BAO_VE.md`.
 >
 > 18/08: hai repo đã gom về `D:\capstone\newroot\` (`FURPMS_BEv2` + `furpms-web`). Mọi đường dẫn
 > `core/FURPMS-Web` trong docs đã được sửa theo — gặp lại chỗ nào còn sót thì sửa luôn.
@@ -52,12 +58,7 @@
 | `API_CONTRACT.md` | **Giao kèo FE↔BE**: mọi endpoint, quyền, request/response, ghi chú thay đổi | Khi thêm/sửa endpoint, hoặc FE hỏi "gọi cái gì" |
 | `ERD_v3_Project_Centric.dbml` | **Sơ đồ DB duy nhất** (~56 bảng, Project-centric) | Khi đụng schema |
 | `Review2_Diagrams.md` · `RP4_Diagrams.md` | Use case / sequence / activity / state machine | Khi sửa luồng thì phải sửa theo |
-| **`RP1_Sua_Chu.md`** | **Phần CHỮ của Report 1**: 6 nhóm tính năng mới đã code xong nhưng RP1 không nhắc, Teams+Outlook+Calendar nhắc 6 lần mà 0 dòng code, LI-07 mâu thuẫn với rà trùng, semantic search trả dữ liệu giả | Khi sửa file `.docx` của RP1 |
-| **`RP2_Sua_Chu.md`** | **Phần CHỮ của Report 2**: Table 11 sai 6 dòng công nghệ (SQL Server/Azure/Meet API/model Gemini cũ), Table 8 RAM còn 5 ô `D` của thành viên đã rời, kế hoạch kết thúc 06/09 mà dự án vẫn chạy. Kèm kế hoạch 3 ngày tới hạn 25/09 | Khi sửa file `.docx` của RP2 |
-| **`RP4_Hinh_Da_Sua.md`** | **17 khối mermaid** (7 class + 10 sequence) dựng lại từ code thật cho Report 4 — đã verify tên lớp, tên thuộc tính entity, route `[Http*]`, tên component FE | Khi vẽ/sửa hình RP4. Dán thẳng vào draw.io qua `Arrange → Insert → Advanced → Mermaid` |
-| **`RP4_Sua_Chu.md`** | **Phần CHỮ của Report 4**: Table 1 có 10 dòng bịa (mobile, AutoMapper, Extension/), 17 đoạn diễn giải cần thêm, mục State Machine còn thiếu, ERD phải chụp từ DB thật | Khi sửa file `.docx` của RP4 |
-| **`RP7_Gop_Bai.md`** | **Cách gộp RP1-6 vào Final Report**: cấu trúc RP7 KHÔNG trùng RP1-6 (§II.3/§II.4 đổi tên, §IV đảo thứ tự Database xuống cuối), vì sao phải copy-paste chứ không INCLUDETEXT, 3 bẫy Word khi dán, template còn dữ liệu mẫu `PWM - Psychology website`. Kèm lịch 3 ngày tới hạn 25/09 | Khi bắt đầu gộp RP7 |
-| **`RP7_Phu_Luc_De_Danh.md`** | **Bảng từ viết tắt + nguồn tham khảo** soạn sẵn cho Final Report. **Cố ý KHÔNG đưa vào RP4** vì template RP4 không có hai mục đó (cẩm nang §1.1 phạt thêm mục lạ). Kèm quy tắc quyết định khi mở template RP7 | Khi bắt đầu làm RP7 |
+| **`KE_HOACH_Lich_ICS.md`** | **Kế hoạch đưa lịch họp vào lịch cá nhân bằng `.ics`** (25/09) — không dùng Google API, không migration, 10 bước ~5–6h, kèm test và kiểm tay bằng Gmail thật | Khi làm tính năng lịch |
 | **`CAM_NANG_TRANH_LOI.md`** | **Cẩm nang tránh lỗi** dạng markdown (bản gốc: `Cam-nang-tranh-loi-Capstone-SE.pdf`) — §2 là 8 loại sơ đồ, §12 checklist D-14→D-1, §13 20 câu hỏi hay gặp, §14 bảng tự chấm 15 tiêu chí | **Đọc trước mọi đợt sửa tài liệu.** Mọi trích dẫn "§x.y" trong các doc khác đều trỏ về đây |
 | `SYSTEM_REVIEW.md` | Rà soát hệ thống + danh sách mã **CỐ Ý fix cứng** (không linh hoạt hoá) | ⚠️ Quan trọng khi bị hỏi về hardcode — xem §cẩm nang |
 
@@ -84,6 +85,7 @@
 | `DB_ANALYTIC_REPORT.md` | Phân tích DB (dài, tham khảo) |
 | `Review2_Context_Handoff.md` | Ngữ cảnh bàn giao Review 2 |
 | `Team_Contribution_Week1-8.md` | Đóng góp từng người tuần 1–8 |
+| **`archive/nop-25-09/`** | **Hướng dẫn sửa RP1–RP7 + checklist nộp Edunext 25/09** (13 file, đã dùng xong). Mở `README.md` trong đó trước — có bảng "file nào tra gì" và các chỗ báo cáo lệch code phát hiện sau khi nộp |
 
 ---
 

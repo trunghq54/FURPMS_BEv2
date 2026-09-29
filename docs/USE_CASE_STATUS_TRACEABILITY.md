@@ -43,8 +43,8 @@ database transaction.
 | Trạng thái | Use Case |
 |---|---|
 | **Completed (23)** | UC-01, 02, 04, 05, 06, 08, 09, 10, 11, 12, 16, 20, 21, 22, 25, 26, 27, 28, 29, 30, 33, 34, 35 |
-| **Partial (8)** | UC-03, 13, 14, 15, 17, 23, 31, 32 |
-| **Not completed (2)** | UC-18 Calendar sync; UC-24 Semantic search |
+| **Partial (9)** | UC-03, 13, 14, 15, 17, 23, 24, 31, 32 |
+| **Not completed (1)** | UC-18 Calendar sync |
 | **Superseded (2)** | UC-07 Funding allocation; UC-19 Science→Finance rounds |
 
 ### Ba thay đổi phạm vi phải chủ động nói rõ
@@ -139,7 +139,7 @@ database transaction.
 | UC-21 | View AI feedback suggestions | **Completed** | AI feedback/review-kit và gợi ý từng tiêu chí, có cache và nút áp dụng; người chấm quyết định cuối. | `AiController`; AI panel |
 | UC-22 | Record council decision | **Completed** | Thư ký soạn, Chủ tịch trả sửa/khóa; PASSED/REVISION_REQUIRED/REJECTED cập nhật xuyên luồng. | minutes/decision trong `ReviewScoringService` |
 | UC-23 | Generate AI summary | **Partial** | Có summary proposal, consistency check và reviewer kit; chưa tự tóm tắt progress/final report như mô tả Report 3. | `AiController`; `AiSummaryService` |
-| UC-24 | Perform semantic search | **Not completed** | FE/page cũ tồn tại nhưng route bị ẩn và BE `/api/ai/search` chưa implement. | `SemanticSearchPage` (inactive); API contract §AI |
+| UC-24 | Perform semantic search | **Partial** | Chạy thật từ 22/09: `POST /api/ai/search` nhúng câu hỏi bằng `gemini-embedding-001`, so cosine với kho vector dùng chung với rà trùng, trả top 10 kèm điểm 0–100. Thiếu: chỉ tìm trong **đề cương đã nộp** (chưa có order/báo cáo/chuyên gia); menu web chỉ hiện cho Faculty trong khi Table 17 ghi cả Admin/Staff/RC; BE không lọc kết quả theo vai. | `SemanticSearchController`; `SemanticSearchService`; `SemanticSearchPage` (`/ai-search`) |
 | UC-25 | Create contract | **Completed** | Tạo/sửa/xóa trước ký, upload bản ký, activate/terminate; một Project có thể có nhiều Contract. `WHOLE/PARTIAL` đã bỏ theo scope mới. | `ContractsController`; Contracts pages |
 | UC-26 | Manage deliverables | **Completed** | PI nộp file/link/minh chứng; Staff đánh giá từng sản phẩm; gắn sản phẩm với mốc. | `DeliverablesController`; Deliverables page |
 | UC-27 | Record disbursement | **Completed** | Sinh mốc theo loại đề tài, gắn sản phẩm/minh chứng, kiểm điều kiện rồi đánh dấu đã chi. Chỉ theo dõi, không chuyển tiền thật. | Disbursement controllers/panel |

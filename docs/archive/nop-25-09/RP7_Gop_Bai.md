@@ -316,3 +316,14 @@ trong cả kế hoạch.
 
 Bốn dòng đầu bắt gần hết lỗi kiểu *"tài liệu không khớp phần mềm"* — nhóm lỗi §1.5 đã khiến
 RP4 phải làm lại.
+
+---
+
+## 10. Việc để dành SAU 25/09
+
+| Việc | Ghi chú |
+|---|---|
+| **Tích hợp Google Calendar** | User muốn làm (22/09). **Không làm trước 25/09** — không có trong biên bản hội đồng, cần OAuth (service account + domain-wide delegation qua admin Google Workspace của trường, hoặc consent flow từng người) nên là việc nhiều ngày, và vừa bỏ khỏi RP1/RP2/RP4 nên làm lại là phải viết lại cả ba chỗ. Rủi ro hỏng giữa buổi bảo vệ = §0 nguyên nhân #1, mức **Rất cao**.<br><br>Làm rồi thì phải thêm lại: §II.6.3 Table 11 dòng `Calendar Sync` · §III.2.2 UC-18 · §III.3.1.4 Table 5 `SyncCalendarEvent` · §III.3.1.2 Table 3 dòng 14 · sửa **LI-06** (hiện đang ghi hệ thống KHÔNG tạo/quản lý lịch họp) |
+| **Đẩy gửi email ra hàng đợi nền** | Fix 22/09 chỉ đặt `SmtpClient.Timeout = 10s` để vá triệu chứng "tạo tài khoản báo hỏng mà vẫn tạo". Gốc là gửi thư nằm trong request — chép khuôn `EmbeddingQueue` + `EmbeddingWorker` |
+| **Xoay mật khẩu SMTP Brevo** | `appsettings.json` đang commit kèm mật khẩu thật + Gmail cá nhân ở `FromEmail`. Chuyển sang biến môi trường |
+| **Vector hoá đơn đặt hàng nghiên cứu** | Mở rộng `EmbeddingWorker` sang `research_orders` thì FE-14 mới đúng nguyên lời hứa ban đầu |

@@ -129,6 +129,10 @@ public class UserService : IUserService
         await _users.AddAsync(user);
         await _users.SaveChangesAsync();
 
+        // Form tạo có ô Đơn vị + Học vị nhưng trước 29/09 chỉ màn SỬA mới lưu hai trường này — tạo
+        // xong mở ra là trắng. Gọi sau lần lưu đầu vì hồ sơ học vị cần `user.Id`.
+        await ApplyUnitAndDegreeAsync(user, request.Department, request.AcademicDegree);
+
         foreach (var roleId in request.Roles)
         {
             _users.AddUserRole(new UserRole
