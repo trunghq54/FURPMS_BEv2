@@ -1,4 +1,5 @@
 using FURPMS.Application.Interfaces.Repositories;
+using FURPMS.Domain.Entities.MasterData;
 using FURPMS.Domain.Entities.Users;
 using FURPMS.Infrastructure.Data;
 
@@ -18,4 +19,9 @@ public class UserRepository : Repository<User>, IUserRepository
 
     public void AddUserRole(UserRole userRole) => _db.UserRoles.Add(userRole);
     public void RemoveUserRoles(IEnumerable<UserRole> userRoles) => _db.UserRoles.RemoveRange(userRoles);
+
+    public IQueryable<UserResearchTrack> UserResearchTracks => _db.UserResearchTracks;
+    public IQueryable<ResearchTrack> ResearchTracks => _db.ResearchTracks;
+    public void AddUserResearchTrack(UserResearchTrack track) => _db.UserResearchTracks.Add(track);
+    public void RemoveUserResearchTracks(IEnumerable<UserResearchTrack> tracks) => _db.UserResearchTracks.RemoveRange(tracks);
 }

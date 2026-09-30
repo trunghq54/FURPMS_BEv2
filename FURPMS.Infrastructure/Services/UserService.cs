@@ -41,7 +41,13 @@ public class UserService : IUserService
             .Where(a => ids.Contains(a.UserId) && a.DegreeLevel != null)
             .ToDictionaryAsync(a => a.UserId, a => a.DegreeLevel!);
 
-        return users.Select(u => Map(u, degrees.GetValueOrDefault(u.Id)));
+        var tracks = (await _users.UserResearchTracks
+                .Where(t => ids.Contains(t.UserId))
+                .Select(t => new { t.UserId, t.TrackId })
+                .ToListAsync())
+            .ToLookup(t => t.UserId, t => t.TrackId);
+
+        return users.Select(u => Map(u, degrees.GetValueOrDefault(u.Id), tracks[u.Id].ToList()));
     }
 
     public async Task<UserDto> GetUserByIdAsync(Guid userId)
@@ -57,7 +63,12 @@ public class UserService : IUserService
             .Select(a => a.DegreeLevel)
             .FirstOrDefaultAsync();
 
-        return Map(user, degree);
+        var trackIds = await _users.UserResearchTracks
+            .Where(t => t.UserId == userId)
+            .Select(t => t.TrackId)
+            .ToListAsync();
+
+        return Map(user, degree, trackIds);
     }
 
     /// <summary>
@@ -127,6 +138,7 @@ public class UserService : IUserService
         // Kiểm đơn vị TRƯỚC khi ghi gì xuống DB: ApplyUnitAndDegreeAsync chạy sau lần lưu đầu, báo
         // lỗi ở đó là tài khoản đã nằm trong DB mà chưa có vai.
         await ResolveUnitIdAsync(request.Department);
+        await AssertTracksExistAsync(request.ResearchTrackIds);
 
         var passwordHash = BCrypt.Net.BCrypt.HashPassword(request.TemporaryPassword, workFactor: 12);
         User user;
@@ -163,6 +175,7 @@ public class UserService : IUserService
         // Form tạo có ô Đơn vị + Học vị nhưng trước 29/09 chỉ màn SỬA mới lưu hai trường này — tạo
         // xong mở ra là trắng. Gọi sau lần lưu đầu vì hồ sơ học vị cần `user.Id`.
         await ApplyUnitAndDegreeAsync(user, request.Department, request.AcademicDegree);
+        await ReplaceResearchTracksAsync(user.Id, request.ResearchTrackIds);
 
         foreach (var roleId in request.Roles)
         {
@@ -206,6 +219,8 @@ public class UserService : IUserService
         // Đơn vị + học vị trước đây NHẬN vào rồi bỏ đi: form sửa xong bấm Lưu, đóng lại mở ra là
         // trắng. `UserDto` cũng khai hai trường này mà không ai gán, nên giao diện luôn thấy rỗng.
         await ApplyUnitAndDegreeAsync(user, request.Department, request.AcademicDegree);
+        await AssertTracksExistAsync(request.ResearchTrackIds);
+        await ReplaceResearchTracksAsync(userId, request.ResearchTrackIds);
 
         var existingRoles = user.UserRoles.ToList();
         _users.RemoveUserRoles(existingRoles);
@@ -353,6 +368,40 @@ public class UserService : IUserService
             priority: "HIGH");
     }
 
+    private async Task AssertTracksExistAsync(List<int>? trackIds)
+    {
+        if (trackIds is not { Count: > 0 }) return;
+        var wanted = trackIds.Distinct().ToList();
+        var found = await _users.ResearchTracks.CountAsync(t => wanted.Contains(t.Id));
+        if (found != wanted.Count)
+            throw new ArgumentException("Có lĩnh vực chuyên môn không tồn tại — tải lại trang rồi chọn lại.");
+    }
+
+    /// <summary>
+    /// Ghi lĩnh vực chuyên môn — nguồn DUY NHẤT để xét "đúng chuyên môn" khi lập hội đồng
+    /// (<c>ReviewShared</c>, <c>CouncilCandidateService</c>).
+    ///
+    /// <para><b>Vì sao (30/09):</b> bảng này trước đây CHỈ có seeder điền, không màn hình nào nhập
+    /// được ⇒ trên bản deploy mọi người chấm thật đều "Chưa khai chuyên môn", lập hội đồng nào cũng
+    /// phải gõ lý do ngoại lệ. Ô "Chuyên ngành" gõ tay ở Lý lịch khoa học KHÔNG được dùng để so —
+    /// chữ tự do không so khớp tin cậy được với danh mục lĩnh vực.</para>
+    ///
+    /// <para>Ghi theo CHÊNH LỆCH (bỏ cái thừa, thêm cái thiếu) chứ không xoá hết rồi thêm lại: bảng
+    /// có UNIQUE(user_id, track_id), xoá + thêm cùng cặp trong một lần lưu dễ đụng thứ tự lệnh.
+    /// <c>null</c> ⇒ không đổi gì.</para>
+    /// </summary>
+    private async Task ReplaceResearchTracksAsync(Guid userId, List<int>? trackIds)
+    {
+        if (trackIds == null) return;
+
+        var wanted = trackIds.Distinct().ToHashSet();
+        var current = await _users.UserResearchTracks.Where(t => t.UserId == userId).ToListAsync();
+
+        _users.RemoveUserResearchTracks(current.Where(t => !wanted.Contains(t.TrackId)));
+        foreach (var trackId in wanted.Except(current.Select(t => t.TrackId)))
+            _users.AddUserResearchTrack(new UserResearchTrack { UserId = userId, TrackId = trackId });
+    }
+
     /// <summary>
     /// Tên/mã đơn vị → id. Bỏ trống ⇒ null (không đổi đơn vị). Không khớp đơn vị nào ⇒ BÁO LỖI.
     ///
@@ -404,7 +453,7 @@ public class UserService : IUserService
         }
     }
 
-    private static UserDto Map(User u, string? degreeLevel = null) => new()
+    private static UserDto Map(User u, string? degreeLevel = null, List<int>? trackIds = null) => new()
     {
         Id = u.Id,
         Email = u.Email,
@@ -417,6 +466,7 @@ public class UserService : IUserService
         IsActive = u.Status == UserStatus.Active,
         MustChangePassword = false,
         CreatedAt = u.CreatedAt,
-        LastLoginAt = u.LastLoginAt
+        LastLoginAt = u.LastLoginAt,
+        ResearchTrackIds = trackIds ?? new()
     };
 }

@@ -145,7 +145,21 @@ gửi qua **API HTTPS của Brevo**: có env `EmailSettings__BrevoApiKey` (`xkey
 `api.brevo.com`, không có thì SMTP như cũ. Hai bẫy đã gặp: (1) Brevo mặc định **chặn IP lạ** cho API
 key — phải vào Brevo → Security → Authorized IPs → *Deactivate blocking* cho API keys, vì IP ra của
 Railway không cố định; (2) lỗi của Brevo ghi nguyên văn vào `email_logs.error_message`, đọc ở đó trước.
-Đã gửi thật từ local qua API → `SENT`.
+Đã gửi thật từ local qua API → `SENT`. **Trên Railway cũng `SENT` (30/09 02:33 UTC)** — nhưng chỉ sau
+khi bấm **⋮ → Redeploy**: Railway chụp biến lúc TẠO bản deploy, thêm biến trong lúc bản build từ
+GitHub đang chạy thì bản đó không có biến (dấu hiệu: lỗi vẫn ghi `(SMTP)`).
+
+### 1.4d Chuyên môn người chấm nay NHẬP ĐƯỢC ở form người dùng (30/09)
+
+**Lỗ hổng tìm ra:** "đúng chuyên môn" khi lập hội đồng (`ReviewShared`, `CouncilCandidateService`) so
+bảng `user_research_tracks` — nhưng bảng này **chỉ seeder điền**, không màn hình/API nào nhập được ⇒
+trên deploy mọi người chấm thật đều "Chưa khai chuyên môn". Ô "Chuyên ngành" gõ tay ở Lý lịch khoa học
+**không được dùng để so** (chữ tự do, không khớp được danh mục lĩnh vực).
+
+**Đã sửa:** `CreateUserRequest`/`UpdateUserRequest` có `researchTrackIds` (không bắt buộc; khi sửa,
+`null` = giữ nguyên, `[]` = xoá hết), `UserDto` trả kèm. Form tạo/sửa người dùng có ô tick "Lĩnh vực
+chuyên môn"; khung chi tiết người dùng hiện lĩnh vực + **Lý lịch khoa học (chỉ xem)**. Cùng đợt: bật lại
+**Kho tài liệu** (`/documents`) — ẩn từ 17/08 vì FE đọc `data.items` trong khi BE trả mảng nên luôn trống.
 
 ### 1.5 🔴 Rule #15 đã được VIẾT LẠI (25/08) — đọc trước khi đụng bất cứ chỗ nào có tiền
 

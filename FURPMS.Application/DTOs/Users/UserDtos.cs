@@ -14,6 +14,9 @@ public class UserDto
     public bool MustChangePassword { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? LastLoginAt { get; set; }
+
+    /// <summary>Lĩnh vực chuyên môn (id <c>research_tracks</c>) — dùng xét người chấm đúng ngành.</summary>
+    public List<int> ResearchTrackIds { get; set; } = new();
 }
 
 public class CreateUserRequest
@@ -25,6 +28,9 @@ public class CreateUserRequest
     public int? AcademicDegree { get; set; }
     public List<int> Roles { get; set; } = new();  // Role.Id values
     public string TemporaryPassword { get; set; } = null!;
+
+    /// <summary>Lĩnh vực chuyên môn, không bắt buộc. <c>null</c>/rỗng ⇒ chưa khai.</summary>
+    public List<int>? ResearchTrackIds { get; set; }
 }
 
 public class UpdateUserRequest
@@ -34,4 +40,10 @@ public class UpdateUserRequest
     public string? Department { get; set; }
     public int? AcademicDegree { get; set; }
     public List<int> Roles { get; set; } = new();
+
+    /// <summary>
+    /// Lĩnh vực chuyên môn. <c>null</c> ⇒ GIỮ NGUYÊN (client cũ không gửi trường này không được
+    /// vô tình xoá sạch chuyên môn); danh sách rỗng ⇒ xoá hết.
+    /// </summary>
+    public List<int>? ResearchTrackIds { get; set; }
 }

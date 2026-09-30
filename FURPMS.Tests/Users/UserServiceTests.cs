@@ -149,6 +149,47 @@ public class UserServiceTests
             new UpdateUserRequest { FullName = "Mới", Department = "fptU", Roles = new() { staff.Id } }));
     }
 
+    /// <summary>
+    /// Lĩnh vực chuyên môn trước 30/09 chỉ seeder điền được ⇒ trên deploy mọi người chấm đều "chưa
+    /// khai". Nay nhập được lúc tạo/sửa; sửa mà không gửi trường này thì KHÔNG được xoá mất.
+    /// </summary>
+    [Fact]
+    public async Task ResearchTracks_SavedOnCreate_KeptWhenOmitted_ClearedWhenEmpty()
+    {
+        var (db, staff, _) = await SeedAsync();
+        var ai = new FURPMS.Domain.Entities.MasterData.ResearchTrack { Code = "AI", Name = "Trí tuệ nhân tạo" };
+        var it = new FURPMS.Domain.Entities.MasterData.ResearchTrack { Code = "IT", Name = "Công nghệ thông tin" };
+        db.ResearchTracks.AddRange(ai, it);
+        await db.SaveChangesAsync();
+        var service = Service(db);
+
+        var created = await service.CreateUserAsync(new CreateUserRequest
+        {
+            Email = "rv@example.com", FullName = "Người chấm", TemporaryPassword = "TempPass123",
+            Roles = new() { staff.Id }, ResearchTrackIds = new() { ai.Id, it.Id, ai.Id }
+        }, Guid.NewGuid());
+        Assert.Equal(new[] { ai.Id, it.Id }, created.ResearchTrackIds.Order());
+
+        var kept = await service.UpdateUserAsync(created.Id,
+            new UpdateUserRequest { FullName = "Người chấm", Roles = new() { staff.Id } });
+        Assert.Equal(2, kept.ResearchTrackIds.Count);
+
+        var narrowed = await service.UpdateUserAsync(created.Id,
+            new UpdateUserRequest { FullName = "Người chấm", Roles = new() { staff.Id }, ResearchTrackIds = new() { it.Id } });
+        Assert.Equal(new[] { it.Id }, narrowed.ResearchTrackIds);
+
+        var cleared = await service.UpdateUserAsync(created.Id,
+            new UpdateUserRequest { FullName = "Người chấm", Roles = new() { staff.Id }, ResearchTrackIds = new() });
+        Assert.Empty(cleared.ResearchTrackIds);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateUserAsync(new CreateUserRequest
+        {
+            Email = "bad@example.com", FullName = "Sai", TemporaryPassword = "TempPass123",
+            Roles = new() { staff.Id }, ResearchTrackIds = new() { 9999 }
+        }, Guid.NewGuid()));
+        Assert.False(await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email == "bad@example.com"));
+    }
+
     [Fact]
     public async Task Create_SavesUnitAndDegreeFromForm()
     {
