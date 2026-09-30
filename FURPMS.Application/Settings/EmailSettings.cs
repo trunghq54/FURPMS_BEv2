@@ -10,6 +10,15 @@ public class EmailSettings
     public string FromName { get; set; } = "FURPMS System";
 
     /// <summary>
+    /// API key Brevo (<c>xkeysib-…</c>, KHÁC SMTP key). Có ⇒ gửi qua HTTPS
+    /// <c>api.brevo.com</c>; trống ⇒ gửi SMTP như cũ.
+    /// <para>Vì sao cần (30/09): Railway chặn kết nối SMTP ra ngoài — cả cổng 587 lẫn 2525 đều
+    /// treo tới trần 10 giây rồi FAILED, không lá thư nào tới được người nhận. HTTPS (443) thì
+    /// không bị chặn. Prod đặt qua env <c>EmailSettings__BrevoApiKey</c>.</para>
+    /// </summary>
+    public string BrevoApiKey { get; set; } = string.Empty;
+
+    /// <summary>
     /// Gốc URL của FE, để ghép với <c>ActionUrl</c> của thông báo thành link bấm được
     /// trong email (thông báo in-app chỉ lưu đường dẫn tương đối như <c>/proposals/my</c>).
     /// Local: <c>http://localhost:5173</c> — prod: đặt qua env <c>EmailSettings__FrontendUrl</c>.

@@ -100,7 +100,8 @@ public static class DependencyInjection
         // Nghiệp vụ chỉ XẾP HÀNG thư (QueuedEmailService); worker nền mới gửi thật bằng
         // SmtpEmailService — gửi ngay trong request làm nộp đề cương/tạo tài khoản quá 15 giây.
         services.AddSingleton<EmailQueue>();
-        services.AddScoped<SmtpEmailService>();
+        // HttpClient cho đường gửi qua API Brevo (Railway chặn SMTP).
+        services.AddHttpClient<SmtpEmailService>();
         services.AddScoped<IEmailService, QueuedEmailService>();
         services.AddHostedService<EmailDispatchWorker>();
         services.AddScoped<INotifier, Notifier>();

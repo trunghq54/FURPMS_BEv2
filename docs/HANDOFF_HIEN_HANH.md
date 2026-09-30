@@ -140,6 +140,13 @@ gửi ngầm bằng `SmtpEmailService` (vẫn ghi `email_logs` như cũ). Đo lo
 thư vẫn `SENT`. **Đánh đổi:** hàng đợi trong bộ nhớ — thư chưa kịp gửi mà redeploy thì mất (thông báo
 trong app vẫn còn). Thư có tới được hay không vẫn tuỳ SMTP của Railway — kiểm bằng `email_logs`.
 
+**30/09 — Railway CHẶN SMTP** (587 và 2525 đều `FAILED … không phản hồi sau 10 giây`). Đã thêm đường
+gửi qua **API HTTPS của Brevo**: có env `EmailSettings__BrevoApiKey` (`xkeysib-…`) thì gửi qua
+`api.brevo.com`, không có thì SMTP như cũ. Hai bẫy đã gặp: (1) Brevo mặc định **chặn IP lạ** cho API
+key — phải vào Brevo → Security → Authorized IPs → *Deactivate blocking* cho API keys, vì IP ra của
+Railway không cố định; (2) lỗi của Brevo ghi nguyên văn vào `email_logs.error_message`, đọc ở đó trước.
+Đã gửi thật từ local qua API → `SENT`.
+
 ### 1.5 🔴 Rule #15 đã được VIẾT LẠI (25/08) — đọc trước khi đụng bất cứ chỗ nào có tiền
 
 Câu cũ — *"Tài chính = minh chứng, hệ thống KHÔNG quản tiền… scope = **strip + ẩn nav/UI tiền**"* —

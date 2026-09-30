@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Net.Mail;
 using FURPMS.Application.Constants;
 using FURPMS.Application.Interfaces.Repositories;
@@ -26,15 +27,18 @@ public class SmtpEmailService : IEmailService
     private readonly INotificationRepository _notifications;
     private readonly EmailSettings _email;
     private readonly ISystemSettingService _sysSettings;
+    private readonly HttpClient _http;
 
     public SmtpEmailService(
         INotificationRepository notifications,
         IOptions<EmailSettings> settings,
-        ISystemSettingService sysSettings)
+        ISystemSettingService sysSettings,
+        HttpClient http)
     {
         _notifications = notifications;
         _email = settings.Value;
         _sysSettings = sysSettings;
+        _http = http;
     }
 
     public async Task SendAsync(
@@ -64,61 +68,36 @@ public class SmtpEmailService : IEmailService
         else
         try
         {
-            using var client = new SmtpClient(_email.SmtpServer, _email.SmtpPort)
-            {
-                Credentials = new NetworkCredential(_email.SmtpUsername, _email.SmtpPassword),
-                EnableSsl = true,
-
-                // BẮT BUỘC phải đặt. Mặc định của .NET là 100 GIÂY, trong khi trình duyệt bỏ cuộc
-                // sau 15 giây (axiosClient.ts). Tạo tài khoản ghi DB xong mới gửi thư chào mừng và
-                // có `await` — nên khi cổng 587 ra ngoài bị chặn hoặc chậm (hay gặp trên nền tảng
-                // triển khai), luồng đứng ở đây, trình duyệt báo "Không kết nối được máy chủ",
-                // NHƯNG TÀI KHOẢN ĐÃ ĐƯỢC TẠO. Admin tưởng hỏng, bấm lại, lần hai ăn 409.
-                //
-                // 10 giây < 15 giây của trình duyệt ⇒ hỏng thì hỏng gọn: catch ở dưới nuốt lỗi,
-                // ghi `email_logs` là FAILED, API vẫn trả 200 và tài khoản vẫn đúng.
-                //
-                // ⚠ Dòng này chỉ phủ `Send` đồng bộ — trần thật cho `SendMailAsync` là
-                // CancellationToken ở chỗ gửi bên dưới.
-                Timeout = SmtpTimeoutMs
-            };
-
             // Dev/demo: hứng hộ mail của các địa chỉ KHÔNG CÓ THẬT (tài khoản seed) về một
             // hộp thư thật, tiêu đề ghi rõ ai mới là người nhận. Địa chỉ thật vẫn đi thẳng —
             // nếu chuyển hướng cả địa chỉ thật thì tạo tài khoản bằng mail thật sẽ không bao
             // giờ nhận được thư, mà log vẫn báo "SENT" nên rất khó lần ra.
             var redirect = _email.CatchFakeMailInbox?.Trim();
             var isRedirected = !string.IsNullOrEmpty(redirect) && ShouldRedirect(recipientEmail);
-
-            using var message = new MailMessage
-            {
-                From = new MailAddress(_email.FromEmail, _email.FromName),
-                Subject = isRedirected ? $"[→ {recipientEmail}] {subject}" : subject
-            };
-            message.To.Add(isRedirected ? redirect! : recipientEmail);
-            loggedSubject = message.Subject;
+            var to = isRedirected ? redirect! : recipientEmail;
+            loggedSubject = isRedirected ? $"[→ {recipientEmail}] {subject}" : subject;
 
             // Gửi kèm CẢ hai bản (text + HTML). Trước đây body là text trần nhưng cờ
             // IsBodyHtml=true và không có bản text thay thế — đúng đặc điểm mail rác,
             // bị bộ lọc chấm điểm xấu. Nay đúng chuẩn multipart/alternative.
             var link = BuildLink(actionUrl);
-            message.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(
-                BuildPlainText(subject, body, link), null, "text/plain"));
-            message.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(
-                BuildHtml(subject, body, link), null, "text/html"));
+            var text = BuildPlainText(subject, body, link);
+            var html = BuildHtml(subject, body, link);
 
-            // `Timeout` ở trên CHỈ có tác dụng với `Send` đồng bộ — `SendMailAsync` bỏ qua nó hoàn
-            // toàn (tài liệu .NET ghi rõ "synchronous Send call"). Bản sửa 22/09 chỉ đặt `Timeout`
-            // nên thực ra chưa chặn được gì: 29/09 tạo tài khoản vẫn treo quá 15 giây, trình duyệt
-            // báo lỗi, admin bấm lại và ăn "Đã có tài khoản dùng email…". Trần thời gian cho bản
-            // async phải đi qua CancellationToken.
+            // `Timeout` của SmtpClient CHỈ có tác dụng với `Send` đồng bộ — `SendMailAsync` bỏ qua
+            // nó hoàn toàn (tài liệu .NET ghi rõ "synchronous Send call"). Bản sửa 22/09 chỉ đặt
+            // `Timeout` nên thực ra chưa chặn được gì. Trần thời gian phải đi qua CancellationToken
+            // — dùng chung cho cả hai đường gửi.
             using var cts = new CancellationTokenSource(SmtpTimeoutMs);
-            await client.SendMailAsync(message, cts.Token);
+            if (!string.IsNullOrWhiteSpace(_email.BrevoApiKey))
+                await SendViaBrevoApiAsync(to, loggedSubject, text, html, cts.Token);
+            else
+                await SendViaSmtpAsync(to, loggedSubject, text, html, cts.Token);
         }
         catch (OperationCanceledException)
         {
             status = "FAILED";
-            errorMessage = $"Máy chủ thư không phản hồi sau {SmtpTimeoutMs / 1000} giây.";
+            errorMessage = $"Máy chủ thư không phản hồi sau {SmtpTimeoutMs / 1000} giây{(string.IsNullOrWhiteSpace(_email.BrevoApiKey) ? " (SMTP)" : " (Brevo API)")}.";
         }
         catch (Exception ex)
         {
@@ -127,6 +106,59 @@ public class SmtpEmailService : IEmailService
         }
 
         await AddLogAndSaveAsync(recipientEmail, emailType, loggedSubject, status, errorMessage, recipientUserId);
+    }
+
+    private async Task SendViaSmtpAsync(string to, string subject, string text, string html, CancellationToken ct)
+    {
+        using var client = new SmtpClient(_email.SmtpServer, _email.SmtpPort)
+        {
+            Credentials = new NetworkCredential(_email.SmtpUsername, _email.SmtpPassword),
+            EnableSsl = true,
+            // Mặc định .NET là 100 GIÂY. Chỉ phủ `Send` đồng bộ — trần thật là `ct` bên dưới.
+            Timeout = SmtpTimeoutMs
+        };
+
+        using var message = new MailMessage
+        {
+            From = new MailAddress(_email.FromEmail, _email.FromName),
+            Subject = subject
+        };
+        message.To.Add(to);
+        message.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(text, null, "text/plain"));
+        message.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(html, null, "text/html"));
+
+        await client.SendMailAsync(message, ct);
+    }
+
+    /// <summary>
+    /// Gửi qua API giao dịch của Brevo (HTTPS 443) — đường thay cho SMTP khi nền tảng triển khai
+    /// chặn cổng thư (Railway: 587 và 2525 đều treo, 30/09). Cùng tài khoản, cùng người gửi đã
+    /// xác minh, chỉ khác đường đi. Lỗi (key sai, người gửi chưa xác minh…) ném ra kèm nguyên văn
+    /// phản hồi của Brevo để <c>email_logs</c> ghi đúng lý do.
+    /// </summary>
+    private async Task SendViaBrevoApiAsync(string to, string subject, string text, string html, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.brevo.com/v3/smtp/email")
+        {
+            Content = JsonContent.Create(new
+            {
+                sender = new { name = _email.FromName, email = _email.FromEmail },
+                to = new[] { new { email = to } },
+                subject,
+                htmlContent = html,
+                textContent = text
+            })
+        };
+        request.Headers.Add("api-key", _email.BrevoApiKey.Trim());
+        request.Headers.Accept.ParseAdd("application/json");
+
+        using var response = await _http.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var detail = await response.Content.ReadAsStringAsync(ct);
+            throw new InvalidOperationException(
+                $"Brevo API trả {(int)response.StatusCode}: {(detail.Length > 300 ? detail[..300] : detail)}");
+        }
     }
 
     /// <summary>
