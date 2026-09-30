@@ -127,6 +127,19 @@ của bản deploy → tải được. Đề tài nào đã chạy AI lúc file 
 > `furpmsbev2-production-04bd.up.railway.app` — KHÔNG còn là `furpmsbev2-production.up.railway.app`
 > (project `abundant-endurance`) như các chỗ khác trong docs/`.env` ghi.
 
+### 1.4c Thư gửi qua HÀNG ĐỢI NỀN — hết "Không kết nối được máy chủ" khi nộp/tạo (29/09)
+
+**Triệu chứng trên Railway:** tạo tài khoản, nộp đề cương… chờ lâu rồi báo *"Không kết nối được
+máy chủ"*, nhưng dữ liệu ĐÃ LƯU; bấm lại thì ăn lỗi trùng.
+
+**Nguyên nhân:** `Notifier` gửi thư NGAY TRONG request, lần lượt từng người nhận; SMTP từ Railway
+chậm/bị chặn nên mỗi lá chờ tới trần 10 giây ⇒ vài người nhận là quá 15 giây của axios.
+
+**Đã sửa:** `IEmailService` giờ là `QueuedEmailService` — chỉ xếp hàng rồi trả về; `EmailDispatchWorker`
+gửi ngầm bằng `SmtpEmailService` (vẫn ghi `email_logs` như cũ). Đo local: tạo tài khoản 2,1 s → 0,3 s,
+thư vẫn `SENT`. **Đánh đổi:** hàng đợi trong bộ nhớ — thư chưa kịp gửi mà redeploy thì mất (thông báo
+trong app vẫn còn). Thư có tới được hay không vẫn tuỳ SMTP của Railway — kiểm bằng `email_logs`.
+
 ### 1.5 🔴 Rule #15 đã được VIẾT LẠI (25/08) — đọc trước khi đụng bất cứ chỗ nào có tiền
 
 Câu cũ — *"Tài chính = minh chứng, hệ thống KHÔNG quản tiền… scope = **strip + ẩn nav/UI tiền**"* —

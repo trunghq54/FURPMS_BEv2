@@ -97,7 +97,12 @@ public static class DependencyInjection
         else
             services.AddSingleton<IFileStorage, LocalDiskFileStorage>();
 
-        services.AddScoped<IEmailService, SmtpEmailService>();
+        // Nghiệp vụ chỉ XẾP HÀNG thư (QueuedEmailService); worker nền mới gửi thật bằng
+        // SmtpEmailService — gửi ngay trong request làm nộp đề cương/tạo tài khoản quá 15 giây.
+        services.AddSingleton<EmailQueue>();
+        services.AddScoped<SmtpEmailService>();
+        services.AddScoped<IEmailService, QueuedEmailService>();
+        services.AddHostedService<EmailDispatchWorker>();
         services.AddScoped<INotifier, Notifier>();
         services.AddScoped<IDeadlineReminderScanner, DeadlineReminderScanner>();
         // Hàng đợi phải là SINGLETON: controller/service ghi vào, worker nền đọc ra —

@@ -125,6 +125,30 @@ public class UserServiceTests
         Assert.Equal(new[] { "Staff" }, result.Roles);
     }
 
+    /// <summary>
+    /// Gõ đơn vị không có thật ("fptU") trước 29/09 được báo thành công rồi lặng lẽ bỏ đi. Nay phải
+    /// báo lỗi — và khi TẠO thì không được để lại tài khoản dở dang trong DB.
+    /// </summary>
+    [Fact]
+    public async Task UnknownUnit_IsRejected_AndCreateLeavesNoUserBehind()
+    {
+        var (db, staff, _) = await SeedAsync();
+        var service = Service(db);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.CreateUserAsync(new CreateUserRequest
+        {
+            Email = "fptu@example.com", FullName = "Sai đơn vị", TemporaryPassword = "TempPass123",
+            Department = "fptU", Roles = new() { staff.Id }
+        }, Guid.NewGuid()));
+        Assert.False(await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email == "fptu@example.com"));
+
+        var user = new User { Email = "edit@example.com", FullName = "Cũ", Status = UserStatus.Active };
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+        await Assert.ThrowsAsync<ArgumentException>(() => service.UpdateUserAsync(user.Id,
+            new UpdateUserRequest { FullName = "Mới", Department = "fptU", Roles = new() { staff.Id } }));
+    }
+
     [Fact]
     public async Task Create_SavesUnitAndDegreeFromForm()
     {

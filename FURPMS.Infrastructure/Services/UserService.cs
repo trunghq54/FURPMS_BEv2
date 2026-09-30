@@ -124,6 +124,10 @@ public class UserService : IUserService
                 throw new KeyNotFoundException("Không tìm thấy vai trò.");
         }
 
+        // Kiểm đơn vị TRƯỚC khi ghi gì xuống DB: ApplyUnitAndDegreeAsync chạy sau lần lưu đầu, báo
+        // lỗi ở đó là tài khoản đã nằm trong DB mà chưa có vai.
+        await ResolveUnitIdAsync(request.Department);
+
         var passwordHash = BCrypt.Net.BCrypt.HashPassword(request.TemporaryPassword, workFactor: 12);
         User user;
         if (existing != null)
@@ -349,15 +353,29 @@ public class UserService : IUserService
             priority: "HIGH");
     }
 
+    /// <summary>
+    /// Tên/mã đơn vị → id. Bỏ trống ⇒ null (không đổi đơn vị). Không khớp đơn vị nào ⇒ BÁO LỖI.
+    ///
+    /// <para>Trước 29/09 không khớp thì lặng lẽ bỏ qua: form cũ là ô gõ tự do, admin gõ "fptU",
+    /// bấm Lưu, báo thành công — mở lại vẫn trắng mà không biết vì sao. Nay FE cho chọn từ danh
+    /// sách, còn BE vẫn chặn để client khác (mobile, gọi API tay) không rơi lại vào hố cũ.</para>
+    /// </summary>
+    private async Task<int?> ResolveUnitIdAsync(string? department)
+    {
+        if (string.IsNullOrWhiteSpace(department)) return null;
+
+        var name = department.Trim();
+        var unit = await _users.OrganizationalUnits
+            .FirstOrDefaultAsync(x => x.Name == name || x.Code == name);
+        return unit?.Id
+            ?? throw new ArgumentException(
+                $"Không có đơn vị nào tên hoặc mã \"{name}\" — chọn một đơn vị trong danh sách, hoặc thêm đơn vị mới ở mục Đơn vị tổ chức.");
+    }
+
     private async Task ApplyUnitAndDegreeAsync(User user, string? department, int? academicDegree)
     {
-        if (!string.IsNullOrWhiteSpace(department))
-        {
-            var name = department.Trim();
-            var unit = await _users.OrganizationalUnits
-                .FirstOrDefaultAsync(x => x.Name == name || x.Code == name);
-            if (unit != null) user.UnitId = unit.Id;
-        }
+        if (await ResolveUnitIdAsync(department) is { } unitId)
+            user.UnitId = unitId;
 
         if (academicDegree is not { } degree) return;
 
