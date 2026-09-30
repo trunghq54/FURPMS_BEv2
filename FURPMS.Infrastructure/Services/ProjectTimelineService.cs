@@ -63,6 +63,7 @@ public class ProjectTimelineService : IProjectTimelineService
         await AddRevisionStageAsync(stages, projectId);
         await AddReviewStagesAsync(stages, project.CycleTrackId, projectId);
         await AddContractStagesAsync(stages, projectId);
+        await AddPlannedStagesAsync(stages, project.Status);
 
         // Xếp lại theo thứ tự vòng đời rồi mới tính trạng thái — trạng thái phụ thuộc hạn và ngày
         // thực tế của TỪNG giai đoạn, không phụ thuộc thứ tự, nên tính sau cho gọn.
@@ -266,7 +267,11 @@ public class ProjectTimelineService : IProjectTimelineService
         var meetingWorkingDays = await _settings.GetIntAsync(
             SystemSettingKeys.MeetingDeadlineWorkingDays, SystemSettingKeys.DefaultMeetingDeadlineWorkingDays);
 
-        var order = 10;
+        // Vòng xét duyệt đứng TRƯỚC ký hợp đồng (10..), vòng nghiệm thu đứng SAU báo cáo tổng kết (82..).
+        // Trước 30/09 mọi vòng dùng chung một bộ đếm từ 10 ⇒ "Họp hội đồng nghiệm thu" hiện TRƯỚC
+        // "Ký hợp đồng" — sai vòng đời QĐ543 (nghiệm thu là bước gần cuối, Điều 11–12).
+        var reviewOrder = 10;
+        var acceptanceOrder = 82;
         foreach (var round in rounds)
         {
             // Codebase so chuỗi thẳng cho RoundType (xem ReviewShared.cs) — giữ đúng lối đó.
@@ -275,8 +280,8 @@ public class ProjectTimelineService : IProjectTimelineService
 
             var scoring = new ProjectStageDto
             {
-                Code = StageCodes.Review,
-                Order = order++,
+                Code = isAcceptance ? StageCodes.AcceptanceReview : StageCodes.Review,
+                Order = isAcceptance ? acceptanceOrder++ : reviewOrder++,
                 ActualDate = Fmt(pr?.FinalizedAt ?? round.ClosedAt),
                 EntityType = "ReviewRound",
                 EntityId = round.Id.ToString()
@@ -307,7 +312,7 @@ public class ProjectTimelineService : IProjectTimelineService
             var meeting = new ProjectStageDto
             {
                 Code = isAcceptance ? StageCodes.AcceptanceMeeting : StageCodes.ReviewMeeting,
-                Order = order++,
+                Order = isAcceptance ? acceptanceOrder++ : reviewOrder++,
                 ActualDate = Fmt(pr?.FinalizedAt),
                 EntityType = "ReviewCouncil",
                 EntityId = council.Id.ToString()
@@ -371,6 +376,7 @@ public class ProjectTimelineService : IProjectTimelineService
         }
         // Chưa có quyết định duyệt thì chưa suy được hạn — nói rõ thay vì để trống trơn.
         signing.DeadlineBasis ??= "Ký hợp đồng sau khi hội đồng chốt duyệt đề cương";
+        signing.IsPlanned = approvedAt is null && contract is null;
         stages.Add(signing);
 
         if (contract is null) return;
@@ -501,6 +507,51 @@ public class ProjectTimelineService : IProjectTimelineService
         }
     }
 
+    /// <summary>
+    /// Hiện sẵn các bước CHƯA TỚI để người dùng thấy đủ lộ trình từ lúc mới nộp.
+    ///
+    /// <para><b>Vì sao (30/09):</b> trước đây mỗi bước chỉ hiện khi đã có bản ghi (vòng chấm, hợp
+    /// đồng, kỳ báo cáo…) ⇒ đề tài vừa nộp chỉ thấy 2 dòng, chủ nhiệm không biết còn gì phía sau.
+    /// Mỗi bước dự kiến ghi ĐIỀU KIỆN để nó mở ra, không bịa ngày.</para>
+    ///
+    /// <para>Không thêm bước dự kiến khi: đề tài đã đóng (hoàn thành/huỷ/chấm dứt), hoặc đã có bước
+    /// ĐỨNG SAU nó làm xong — bước bị bỏ qua thật (ví dụ hợp đồng không có đợt giải ngân nào) mà vẫn
+    /// hiện "chưa tới" là nói sai. "Nộp bản chỉnh sửa" không có ở đây vì chỉ xảy ra khi hội đồng yêu cầu.</para>
+    /// </summary>
+    private async Task AddPlannedStagesAsync(List<ProjectStageDto> stages, string projectStatus)
+    {
+        if (projectStatus is ProjectStatus.Completed or ProjectStatus.Cancelled or ProjectStatus.Terminated)
+        {
+            // Đề tài đã đóng (kể cả bị loại ở vòng xét duyệt) thì không còn bước nào "sắp tới" —
+            // "Ký hợp đồng: chưa tới" trên một đề tài đã bị loại là nói sai.
+            foreach (var stage in stages) stage.IsPlanned = false;
+            return;
+        }
+
+        var archivalDays = await ArchivalLeadAsync();
+        var planned = new (string Code, int Order, string Basis)[]
+        {
+            (StageCodes.Review, 10, "Phòng QLKH đưa đề tài vào vòng chấm xét duyệt sau khi hết hạn nộp"),
+            (StageCodes.ReviewMeeting, 11, "Hội đồng xét duyệt họp sau khi chấm xong (QĐ543 Điều 8.3)"),
+            (StageCodes.ProgressReport, 50, "Theo các kỳ báo cáo ghi trong hợp đồng (BM06)"),
+            (StageCodes.Deliverable, 60, "Các sản phẩm đã đăng ký trong hợp đồng"),
+            (StageCodes.Disbursement, 70, "Theo điều kiện của từng đợt ghi trong hợp đồng"),
+            (StageCodes.FinalReport, 80, "QĐ543 Điều 11.2.a — nộp ít nhất 30 ngày trước khi kết thúc đề tài"),
+            (StageCodes.AcceptanceReview, 82, "Chấm nghiệm thu sau khi báo cáo tổng kết được tiếp nhận"),
+            (StageCodes.AcceptanceMeeting, 83, "Hội đồng nghiệm thu họp sau khi chấm xong"),
+            (StageCodes.Settlement, 90, "Quyết toán và ký Biên bản thanh lý (BM13) sau khi nghiệm thu đạt"),
+            (StageCodes.Archival, 100, $"{archivalDays} ngày kể từ khi báo cáo tổng kết được tiếp nhận"),
+        };
+
+        var lastDoneOrder = stages.Where(s => s.ActualDate is not null).Select(s => s.Order).DefaultIfEmpty(0).Max();
+
+        foreach (var (code, order, basis) in planned)
+        {
+            if (order <= lastDoneOrder || stages.Any(s => s.Code == code)) continue;
+            stages.Add(new ProjectStageDto { Code = code, Order = order, DeadlineBasis = basis, IsPlanned = true });
+        }
+    }
+
     private async Task<int> FinalReportLeadAsync() => await _settings.GetIntAsync(
         SystemSettingKeys.FinalReportLeadDays, SystemSettingKeys.DefaultFinalReportLeadDays);
 
@@ -513,6 +564,12 @@ public class ProjectTimelineService : IProjectTimelineService
         if (stage.ActualDate is not null)
         {
             stage.Status = StageStatus.Done;
+            return;
+        }
+
+        if (stage.IsPlanned)
+        {
+            stage.Status = StageStatus.NotStarted;
             return;
         }
 

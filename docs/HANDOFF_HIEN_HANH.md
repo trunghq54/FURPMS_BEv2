@@ -161,6 +161,16 @@ trên deploy mọi người chấm thật đều "Chưa khai chuyên môn". Ô "
 chuyên môn"; khung chi tiết người dùng hiện lĩnh vực + **Lý lịch khoa học (chỉ xem)**. Cùng đợt: bật lại
 **Kho tài liệu** (`/documents`) — ẩn từ 17/08 vì FE đọc `data.items` trong khi BE trả mảng nên luôn trống.
 
+### 1.4e Tiến trình đề tài hiện ĐỦ LỘ TRÌNH từ lúc nộp (30/09)
+
+- **Trước:** mỗi bước chỉ hiện khi đã có bản ghi ⇒ đề tài vừa nộp thấy 2 dòng. Nay `ProjectTimelineService.AddPlannedStagesAsync`
+  thêm các bước chưa tới (`IsPlanned`, status `NOT_STARTED`, `DeadlineBasis` = điều kiện mở bước) — không bịa ngày.
+  Không thêm khi đề tài đã đóng, hoặc khi có bước ĐỨNG SAU đã xong (bước bị bỏ qua thật thì không hiện "chưa tới").
+- **Lỗi thứ tự đã sửa:** vòng NGHIỆM THU dùng chung bộ đếm với vòng xét duyệt ⇒ "Họp hội đồng nghiệm thu" đứng TRƯỚC
+  "Ký hợp đồng". Nay chấm nghiệm thu có mã riêng `ACCEPTANCE_REVIEW`, xếp sau báo cáo tổng kết (order 82+).
+- Panel lộ trình nay có ở: tab **Tiến trình đề tài** màn chi tiết đề cương (Staff) và trang chi tiết đề cương của **PI**
+  — trước chỉ nằm trong chi tiết hợp đồng nên đề tài chưa ký hợp đồng không xem được.
+
 ### 1.5 🔴 Rule #15 đã được VIẾT LẠI (25/08) — đọc trước khi đụng bất cứ chỗ nào có tiền
 
 Câu cũ — *"Tài chính = minh chứng, hệ thống KHÔNG quản tiền… scope = **strip + ẩn nav/UI tiền**"* —

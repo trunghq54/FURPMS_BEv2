@@ -57,6 +57,12 @@ public class ProjectStageDto
 
     public string Status { get; set; } = StageStatus.NotStarted;
 
+    /// <summary>
+    /// Bước CHƯA TỚI, hiện sẵn để người dùng thấy cả lộ trình (30/09). Chưa có bản ghi nào đứng sau
+    /// nó; <see cref="DeadlineBasis"/> ghi điều kiện để bước này mở ra.
+    /// </summary>
+    public bool IsPlanned { get; set; }
+
     /// <summary>Số ngày còn lại tới hạn; âm = đã quá hạn. <c>null</c> khi không có hạn.</summary>
     public int? DaysLeft { get; set; }
 
@@ -103,6 +109,8 @@ public static class StageCodes
     public const string ProposalSubmission = "PROPOSAL_SUBMISSION";
     public const string Revision = "REVISION";
     public const string Review = "REVIEW";
+    /// <summary>Chấm của vòng NGHIỆM THU — tách mã khỏi <see cref="Review"/> để đứng đúng chỗ (sau báo cáo tổng kết).</summary>
+    public const string AcceptanceReview = "ACCEPTANCE_REVIEW";
     public const string ReviewMeeting = "REVIEW_MEETING";
     public const string ContractSigning = "CONTRACT_SIGNING";
     public const string ProgressReport = "PROGRESS_REPORT";

@@ -317,4 +317,82 @@ public class ProjectTimelineServiceTests
         Assert.Equal(linkedRound.Id.ToString(), stage.EntityId);
         Assert.DoesNotContain(reviewStages, s => s.EntityId == unrelatedRound.Id.ToString());
     }
+
+    // ── 9: đề tài vừa nộp thấy ĐỦ lộ trình, bước chưa tới đánh dấu NOT_STARTED ─
+    [Fact]
+    public async Task DeTaiMoiNop_HienDuLoTrinh_BuocChuaToiLaNotStarted()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var (project, piId, _, _) = await SeedProjectAsync(db, Today.AddDays(30));
+        project.Status = ProjectStatus.UnderReview;
+        await db.SaveChangesAsync();
+
+        var dto = await MakeSvc(db, ClockAtToday()).GetAsync(project.Id, piId, Array.Empty<string>());
+
+        Assert.Equal(new[]
+        {
+            StageCodes.ProposalSubmission, StageCodes.Review, StageCodes.ReviewMeeting,
+            StageCodes.ContractSigning, StageCodes.ProgressReport, StageCodes.Deliverable,
+            StageCodes.Disbursement, StageCodes.FinalReport, StageCodes.AcceptanceReview,
+            StageCodes.AcceptanceMeeting, StageCodes.Settlement, StageCodes.Archival
+        }, dto.Stages.Select(s => s.Code));
+
+        // Mọi bước sau "Nộp đề cương" đều là dự kiến: không bịa hạn, có ghi điều kiện mở.
+        Assert.All(dto.Stages.Skip(1), s =>
+        {
+            Assert.Equal(StageStatus.NotStarted, s.Status);
+            Assert.Null(s.Deadline);
+            Assert.False(string.IsNullOrWhiteSpace(s.DeadlineBasis));
+        });
+        // "Nộp bản chỉnh sửa" chỉ hiện khi hội đồng yêu cầu sửa — không phải bước bắt buộc.
+        Assert.DoesNotContain(dto.Stages, s => s.Code == StageCodes.Revision);
+        Assert.Equal(0, dto.OverdueCount);
+    }
+
+    // ── 10: vòng NGHIỆM THU đứng sau báo cáo tổng kết, không nhảy lên trước ký hợp đồng ─
+    [Fact]
+    public async Task VongNghiemThu_DungSauBaoCaoTongKet()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var (project, piId, _, track) = await SeedProjectAsync(db, Today.AddDays(-30));
+
+        var review = new ReviewRound
+        {
+            Id = Guid.NewGuid(), CycleTrackId = track.Id, RoundNumber = 1, Sequence = 1,
+            Dimension = ReviewRoundDimension.Science, RoundType = "REVIEW",
+            Status = ReviewRoundStatus.Passed, ClosedAt = DateTime.UtcNow
+        };
+        var acceptance = new ReviewRound
+        {
+            Id = Guid.NewGuid(), CycleTrackId = track.Id, RoundNumber = 2, Sequence = 2,
+            Dimension = ReviewRoundDimension.Science, RoundType = "ACCEPTANCE",
+            Status = ReviewRoundStatus.Open, ScoringDeadline = Today.AddDays(10)
+        };
+        db.ReviewRounds.AddRange(review, acceptance);
+        db.ProjectRounds.AddRange(
+            new ProjectRound { ProjectId = project.Id, RoundId = review.Id, Status = ReviewRoundStatus.Passed },
+            new ProjectRound { ProjectId = project.Id, RoundId = acceptance.Id, Status = ReviewRoundStatus.Open });
+        await db.SaveChangesAsync();
+
+        var codes = (await MakeSvc(db, ClockAtToday()).GetAsync(project.Id, piId, Array.Empty<string>()))
+            .Stages.Select(s => s.Code).ToList();
+
+        Assert.True(codes.IndexOf(StageCodes.Review) < codes.IndexOf(StageCodes.ContractSigning));
+        Assert.True(codes.IndexOf(StageCodes.AcceptanceReview) > codes.IndexOf(StageCodes.FinalReport));
+        Assert.True(codes.IndexOf(StageCodes.AcceptanceReview) < codes.IndexOf(StageCodes.Settlement));
+    }
+
+    // ── 11: đề tài đã đóng thì không bày thêm bước "chưa tới" ────────────────
+    [Fact]
+    public async Task DeTaiDaHoanThanh_KhongThemBuocDuKien()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var (project, piId, _, _) = await SeedProjectAsync(db, Today.AddDays(-30));
+        project.Status = ProjectStatus.Completed;
+        await db.SaveChangesAsync();
+
+        var dto = await MakeSvc(db, ClockAtToday()).GetAsync(project.Id, piId, Array.Empty<string>());
+
+        Assert.DoesNotContain(dto.Stages, s => s.IsPlanned);
+    }
 }
