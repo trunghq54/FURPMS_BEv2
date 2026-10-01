@@ -356,12 +356,26 @@ public class ProgressReportService : IProgressReportService
         // Thầy 29/07: "Staff phải xem được bản báo cáo mới đánh giá". Trước đây luật này CHỈ khoá ở
         // giao diện (nút mờ đi) — gọi thẳng API là đánh giá được báo cáo trắng trơn, không có gì để
         // đọc. Chấp nhận một trong hai: file đính kèm HOẶC link PI dán (file lớn thì dán link).
-        var hasAttachment = await _documents.Query()
-            .AnyAsync(d => d.EntityType == "ProgressReport" && d.EntityId == reportId.ToString() && !d.IsDeleted);
+        var reportDocs = await _documents.Query()
+            .Where(d => d.EntityType == "ProgressReport" && d.EntityId == reportId.ToString() && !d.IsDeleted)
+            .Select(d => d.DocumentCategory)
+            .ToListAsync();
+        // Biên bản họp KHÔNG được tính là "bản báo cáo của PI".
+        var hasAttachment = reportDocs.Any(c => c != "PROGRESS_MINUTES");
         if (!hasAttachment && string.IsNullOrWhiteSpace(report.ReportFileUrl))
             throw new InvalidOperationException(
                 "Báo cáo chưa có file đính kèm lẫn link — chưa có gì để đọc thì chưa đánh giá được. " +
                 "Đề nghị chủ nhiệm bổ sung bản báo cáo trước.");
+
+        // QĐ543 Điều 10.1: chủ nhiệm báo cáo tiến độ "trong buổi họp với Hội đồng đánh giá tiến độ do
+        // Trường tổ chức". Trước 01/10 Phòng QLKH tự chọn Đạt/Không đạt — thầy góp ý: cán bộ phòng không
+        // có chuyên môn để đánh giá. Nay Phòng QLKH chỉ GHI NHẬN kết luận của hội đồng, và phải có biên
+        // bản họp làm bằng chứng. Hệ thống KHÔNG quản lý thành viên/phiếu của hội đồng tiến độ (khác hội
+        // đồng xét duyệt, nghiệm thu) — đó là giới hạn đã nêu trong tài liệu.
+        if (!reportDocs.Contains("PROGRESS_MINUTES"))
+            throw new InvalidOperationException(
+                "Chưa có biên bản họp Hội đồng đánh giá tiến độ (QĐ543 Điều 10.1) — tải biên bản lên trước khi " +
+                "ghi nhận kết luận của hội đồng.");
 
         report.Status = ProgressReportStatus.Evaluated;
         report.EvaluatedBy = staffId;
@@ -380,10 +394,10 @@ public class ProgressReportService : IProgressReportService
                 ? $"kỳ {report.ReportRound}" : report.RoundName;
             _decisions.Log(
                 projectId, DecisionTypes.ProgressEvaluated,
-                $"Đánh giá báo cáo tiến độ {ky}: {ProgressResultVi(request.EvaluationResult)}",
+                $"Hội đồng đánh giá tiến độ {ky}: {ProgressResultVi(request.EvaluationResult)}",
                 "ProgressReport", report.Id.ToString(),
                 result: request.EvaluationResult, reason: request.EvaluationComments,
-                documentNo: "BM06", decidedBy: staffId, decidedByRole: "Phòng QLKH");
+                documentNo: "BM06", decidedBy: staffId, decidedByRole: "Hội đồng đánh giá tiến độ (Phòng QLKH ghi nhận)");
         }
 
         await _contracts.SaveChangesAsync();
@@ -492,7 +506,10 @@ public class ProgressReportService : IProgressReportService
         DueDate = r.DueDate?.ToString("yyyy-MM-dd"),
         DaysLeft = DeadlineMath.DaysLeft(r.DueDate, _clock),
         ScheduledMeetingAt = r.ScheduledMeetingAt,
-        MeetingLink = r.MeetingLink
+        MeetingLink = r.MeetingLink,
+        EvaluationResult = r.EvaluationResult,
+        EvaluationComments = r.EvaluationComments,
+        EvaluatedAt = r.EvaluatedAt
     };
 
     private ProgressReportDto MapDetail(ProgressReport r) => new()

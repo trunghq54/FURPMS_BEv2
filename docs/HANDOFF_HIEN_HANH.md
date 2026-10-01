@@ -171,6 +171,78 @@ chuyên môn"; khung chi tiết người dùng hiện lĩnh vực + **Lý lịch
 - Panel lộ trình nay có ở: tab **Tiến trình đề tài** màn chi tiết đề cương (Staff) và trang chi tiết đề cương của **PI**
   — trước chỉ nằm trong chi tiết hợp đồng nên đề tài chưa ký hợp đồng không xem được.
 
+### 1.4f Màn "Hội đồng & Chấm" + hộp thoại thêm thành viên + ô nhập tiền (01/10)
+
+- **Dải mốc thời gian của vòng** (`RoundTimelineStrip`): mở vòng → hạn chấm → hạn họp hội đồng → chốt kết quả,
+  hiện cho MỌI vòng kể cả vòng đã chốt (trước chỉ vòng còn mở mới có hạn chấm). Hạn họp = hạn ghi trên hội đồng,
+  chưa ghi thì suy ra **15 ngày làm việc** từ ngày lập (đếm bỏ T7/CN, `ReviewBoardService.DeriveMeetingDeadline`).
+  BE trả thêm `openedAt/closedAt/isScoringExtended` (vòng), `establishedAt/meetingDeadline` (hội đồng), `proposalId/piName` (đề tài).
+- **Bấm tên đề tài trong vòng** → `ProposalQuickViewSheet` (chủ nhiệm, kinh phí, mục tiêu, xem file thuyết minh).
+- **Thêm thành viên hội đồng**: vai chọn bằng 4 nút ở đầu; ứng viên là danh sách thẻ trong hộp thoại
+  (`CouncilCandidatePicker`), người không chọn được dồn cuối. Logic cảnh báo chuyên môn + API giữ nguyên.
+- **`MoneyInput`**: ô tiền có dấu chấm ngăn nghìn — bảng dự toán khi nộp đề cương, kinh phí đã chi ở báo cáo tiến độ.
+
+### 1.4g Lịch báo cáo tiến độ, tạo hợp đồng, tiến trình gọn hơn (01/10)
+
+- **Xem trước lịch báo cáo tiến độ** (`ProgressSchedulePreview`): hợp đồng từ đâu tới đâu, mặc định mấy kỳ
+  (`ContractDto.DefaultProgressRounds` — có đặt hàng 2, không 1, QĐ543 Điều 10.1), mỗi kỳ hạn ngày nào. Phép chia
+  giống hệt `GenerateScheduledRoundsAsync` (đã so bằng API thật: khớp từng ngày).
+- **Lịch "khoá ngày" không phải lỗi**: hạn nộp ∈ [max(hôm nay, bắt đầu HĐ, bắt đầu kỳ), kết thúc HĐ]; giờ họp ∈
+  [bây giờ, kết thúc HĐ]. Hộp thoại nay ghi rõ khoảng + lý do mốc dưới.
+- **Chi tiết hợp đồng thiếu `ResearchType`** (Include bị sót) ⇒ trả `researchTypeName = null` trong khi danh sách
+  có. Đã thêm Include.
+- **Tạo hợp đồng**: đại diện Bên A HIỆN SẴN tên từ cấu hình (`GET /system-settings/contract-defaults`, Staff đọc
+  được), ngày bắt đầu mặc định hôm nay.
+- **Tiến trình**: bước đã xong chỉ hiện "Xong ngày …"; bỏ "Vòng N —" (số vòng đếm theo cả lĩnh vực) và "chưa đặt
+  hạn họp"; bước theo điều kiện (giải ngân, quyết toán) không còn nhãn "Chưa đặt hạn"; bước lặp đánh số "lần N".
+  Bước dự kiến 50/60/70 (báo cáo, sản phẩm, giải ngân) chạy song song — chỉ coi là bị vượt khi đã sang báo cáo tổng kết.
+- **DataTable nhớ ẩn/hiện cột** theo `exportFileName` (localStorage, bọc try/catch); mô tả lĩnh vực cắt 2 dòng.
+
+### 1.4h Phòng QLKH KHÔNG tự chấm tiến độ nữa — chỉ GHI NHẬN kết luận hội đồng (01/10)
+
+Thầy góp ý: cán bộ phòng không có chuyên môn để cho Đạt/Không đạt. QĐ543 Điều 10.1 giao việc này cho **Hội đồng
+đánh giá tiến độ do Trường tổ chức**. Đổi:
+
+- `EvaluateAsync` bắt buộc có tài liệu `DocumentCategory = "PROGRESS_MINUTES"` (biên bản họp), nếu thiếu thì ném lỗi.
+  Biên bản **không** được tính là "bản báo cáo của PI". Nhật ký quyết định ghi vai "Hội đồng đánh giá tiến độ
+  (Phòng QLKH ghi nhận)".
+- Tải biên bản: `POST /progress-reports/{id}/documents?kind=minutes`, chỉ Staff/Admin. Không có `kind` thì vẫn là
+  file của PI như cũ.
+- **Giữ** 3 mức Đạt / Đạt có điều kiện / Không đạt, vì đợt giải ngân 2–3 (Điều 16) khoá theo kết luận này. **Giữ** %
+  hoàn thành nhưng ghi rõ là "PI tự đánh giá" (số PI tự khai trong BM06).
+- **Giới hạn có chủ đích:** hệ thống KHÔNG quản lý thành viên/phiếu của hội đồng tiến độ (khác hội đồng xét duyệt và
+  nghiệm thu). Biên bản là bằng chứng. Nếu bị hỏi thì nói thẳng đây là hướng mở rộng.
+- Lỗi cũ lộ ra khi test: `ProgressReportSummaryDto` (API danh sách) **không có** `EvaluationResult` ⇒ danh sách chưa
+  bao giờ hiện kết luận, và nút đánh giá hiện mãi. Đã chuyển 3 trường đánh giá lên Summary. Panel Staff nay ẩn nút khi
+  đã có kết luận; `StatusBadge` tô màu PASS/CONDITIONAL/FAIL.
+- **Số 0 đứng đầu** ("05"): sửa chung trong `components/ui/input.tsx` — xem chi tiết dưới.
+
+### 1.4i Rà trùng còn 2 lựa chọn · một đường xin điều chỉnh · "vòng" → "phiên" (01/10)
+
+- **Rà trùng** (thầy góp ý): chỉ còn `NOT_DUPLICATE` / `DUPLICATE`. Trước đây có cả `NEEDS_REVISION`, và **cả
+  ba đều không tác động gì tới đề cương**: kết luận "trùng lặp" xong, đề cương vẫn đi tiếp vào vòng chấm. Nay
+  `DUPLICATE` thì bắt buộc ghi lý do, đề cương chuyển `REJECTED`, đề tài chuyển `CANCELLED`, ghi
+  `Proposal.RejectionReason`, và PI nhận thông báo mức HIGH. Chỉ từ chối được khi đề cương đang
+  `SUBMITTED`/`REVISION_REQUIRED`. `NEEDS_REVISION` giữ trong hằng số để đọc dữ liệu cũ, API không nhận nữa.
+- **PI đọc được lý do từ chối**: `RejectionReason` có trong API từ lâu nhưng không màn nào hiển thị. Nay
+  `ProposalDetailPage` có khung đỏ. Giải thích của AI hiển thị qua `LiteMarkdown`: chỉ hiểu `**đậm**` và gạch đầu
+  dòng, không render HTML.
+- **Một đường xin điều chỉnh**:
+  - Luồng `ChangeRequests` (5 loại, trong trang đề cương) duyệt xong **không có tác dụng gì** và trùng việc với
+    `Amendments` (BM07). Đã gỡ khỏi giao diện PI; thay bằng thẻ trỏ sang "Điều chỉnh hợp đồng" khi đề cương đã duyệt.
+  - Menu Staff `/change-requests` nay là `PendingAmendmentsPage`, dùng `GET /api/amendments/pending`
+    (Staff/Admin) để duyệt hoặc từ chối ngay tại đó; từ chối phải ghi ý kiến.
+  - `AmendmentService` nay báo Staff khi PI gửi đơn và báo PI khi đơn được duyệt hoặc bị từ chối; trước đây không
+    báo ai.
+  - Giữ 4 loại vì khớp 4 nhóm của BM07, mỗi loại có dòng giải thích hệ quả.
+  - Code `ChangeRequest` BE và file FE cũ vẫn còn để đọc dữ liệu cũ.
+- **"Vòng N" → "<Loại> · phiên N"** (`ReviewRoundNaming` BE, `utils/review-round.ts` FE):
+  - `RoundNumber` đếm chung mọi loại trong một (đợt + lĩnh vực), nên mới có "Vòng 3" trong khi QĐ543 chỉ có 2
+    hội đồng. Số phiên nay đếm riêng theo loại.
+  - Vòng có kết quả hiện "Đã chốt" thay cho "Đạt".
+  - Chữ "vòng" trong namespace `reviewBoard`/`roundDeadline` đã đổi thành "phiên"; tên khóa và mã DB giữ nguyên. Ô `type="number"` đang là "0" thì bôi đen khi
+  focus; rời ô thì bỏ số 0 thừa. Cả ~20 form đều dùng `Input` này, đừng vá riêng từng form.
+
 ### 1.5 🔴 Rule #15 đã được VIẾT LẠI (25/08) — đọc trước khi đụng bất cứ chỗ nào có tiền
 
 Câu cũ — *"Tài chính = minh chứng, hệ thống KHÔNG quản tiền… scope = **strip + ẩn nav/UI tiền**"* —

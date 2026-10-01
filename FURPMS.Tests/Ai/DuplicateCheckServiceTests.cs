@@ -156,14 +156,68 @@ public class DuplicateCheckServiceTests
 
         await svc.ReviewAsync(
             a.Id,
-            new ReviewDuplicateRequest { Verdict = DuplicateVerdict.NeedsRevision, Note = "Trùng chủ đề với đề tài B, cần làm rõ khác biệt." },
+            new ReviewDuplicateRequest { Verdict = DuplicateVerdict.Duplicate, Note = "Trùng mục tiêu và phương pháp với đề tài B." },
             staffId, new[] { "Staff" });
 
         // Trước 27/08 kết luận chỉ nằm phía Staff — chủ nhiệm không hề biết đề cương mình có bị
-        // đối chiếu, kể cả khi kết luận là "cần chỉnh sửa" và họ phải làm gì đó ngay.
+        // đối chiếu. Thông báo phải nói rõ bị TỪ CHỐI và kèm lý do.
         var sent = await db.Notifications.Where(n => n.UserId == piId).ToListAsync();
         Assert.Contains(sent, n => n.NotificationType == "DUPLICATE_CHECK_REVIEWED"
-            && n.Body.Contains("cần chỉnh sửa"));
+            && n.Body.Contains("TỪ CHỐI") && n.Body.Contains("đề tài B") && n.Priority == "HIGH");
+    }
+
+    /// <summary>
+    /// "Trùng lặp" phải TỪ CHỐI đề cương thật — trước 01/10 chỉ là một dòng ghi chú, đề cương vẫn
+    /// đi tiếp vào vòng chấm. Lý do lưu trên đề cương để trang của chủ nhiệm đọc được.
+    /// </summary>
+    [Fact]
+    public async Task ReviewAsync_TrungLap_TuChoiDeCuong_VaLuuLyDo()
+    {
+        var (db, staffId, a, _, _) = await SeedAsync();
+        var svc = TestServices.DuplicateChecks(db);
+
+        await svc.ReviewAsync(
+            a.Id, new ReviewDuplicateRequest { Verdict = DuplicateVerdict.Duplicate, Note = "Trùng với đề tài B." },
+            staffId, new[] { "Staff" });
+
+        var p = await db.Proposals.Include(x => x.Project).FirstAsync(x => x.Id == a.Id);
+        Assert.Equal(ProposalStatus.Rejected, p.Status);
+        Assert.Equal(ProjectStatus.Cancelled, p.Project.Status);
+        Assert.Contains("Trùng với đề tài B.", p.RejectionReason);
+    }
+
+    [Fact]
+    public async Task ReviewAsync_TrungLapKhongGhiLyDo_Throws()
+    {
+        var (db, staffId, a, _, _) = await SeedAsync();
+        var svc = TestServices.DuplicateChecks(db);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => svc.ReviewAsync(
+            a.Id, new ReviewDuplicateRequest { Verdict = DuplicateVerdict.Duplicate }, staffId, new[] { "Staff" }));
+    }
+
+    /// <summary>"Cần chỉnh sửa" đã bỏ (thầy góp ý 01/10: chỉ còn trùng / không trùng).</summary>
+    [Fact]
+    public async Task ReviewAsync_CanChinhSua_KhongConNhan()
+    {
+        var (db, staffId, a, _, _) = await SeedAsync();
+        var svc = TestServices.DuplicateChecks(db);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => svc.ReviewAsync(
+            a.Id, new ReviewDuplicateRequest { Verdict = DuplicateVerdict.NeedsRevision, Note = "x" },
+            staffId, new[] { "Staff" }));
+    }
+
+    [Fact]
+    public async Task ReviewAsync_KhongTrung_DeCuongVanChoXetDuyet()
+    {
+        var (db, staffId, a, _, _) = await SeedAsync();
+        var svc = TestServices.DuplicateChecks(db);
+
+        await svc.ReviewAsync(
+            a.Id, new ReviewDuplicateRequest { Verdict = DuplicateVerdict.NotDuplicate }, staffId, new[] { "Staff" });
+
+        Assert.Equal(ProposalStatus.Submitted, (await db.Proposals.FindAsync(a.Id))!.Status);
     }
 
     [Fact]

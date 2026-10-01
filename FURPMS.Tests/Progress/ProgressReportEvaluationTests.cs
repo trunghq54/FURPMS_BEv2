@@ -26,7 +26,7 @@ public class ProgressReportEvaluationTests
         TestServices.ProgressReports(db);
 
     private static async Task<(FURPMSDbContext db, ProgressReport report)> SeedSubmittedReportAsync(
-        string? reportFileUrl, bool withAttachment)
+        string? reportFileUrl, bool withAttachment, bool withMinutes = true)
     {
         var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
 
@@ -113,6 +113,26 @@ public class ProgressReportEvaluationTests
                 MimeType = "application/pdf",
                 StorageContainer = "test",
                 StorageBlobName = "test/bao-cao.pdf",
+                StorageUrl = "/download",
+                UploadedBy = pi.Id
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // Biên bản họp Hội đồng đánh giá tiến độ (QĐ543 Điều 10.1) — bắt buộc từ 01/10 trước khi ghi nhận
+        // kết luận. Mặc định có sẵn để các test cũ chỉ kiểm điều chúng muốn kiểm.
+        if (withMinutes)
+        {
+            db.Documents.Add(new Document
+            {
+                EntityType = "ProgressReport",
+                EntityId = report.Id.ToString(),
+                DocumentCategory = "PROGRESS_MINUTES",
+                OriginalFileName = "bien-ban-hop-ky-1.pdf",
+                FileSizeBytes = 1024,
+                MimeType = "application/pdf",
+                StorageContainer = "test",
+                StorageBlobName = "test/bien-ban.pdf",
                 StorageUrl = "/download",
                 UploadedBy = pi.Id
             });
@@ -229,5 +249,37 @@ public class ProgressReportEvaluationTests
                 new EvaluateProgressReportRequest { EvaluationResult = "ACHIEVED" }, Guid.NewGuid()));
 
         Assert.Contains("PASS", ex.Message);
+    }
+
+    /// <summary>
+    /// Phòng QLKH không tự chấm Đạt/Không đạt — chỉ ghi nhận kết luận của Hội đồng đánh giá tiến độ
+    /// (QĐ543 Điều 10.1), nên phải có biên bản họp. Thầy góp ý 01/10: cán bộ phòng không có chuyên môn.
+    /// </summary>
+    [Fact]
+    public async Task Evaluate_ChuaCoBienBanHop_Throws()
+    {
+        var (db, report) = await SeedSubmittedReportAsync(
+            reportFileUrl: null, withAttachment: true, withMinutes: false);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            MakeService(db).EvaluateAsync(report.Id,
+                new EvaluateProgressReportRequest { EvaluationResult = "PASS" }, Guid.NewGuid()));
+
+        Assert.Contains("biên bản họp", ex.Message);
+        Assert.Equal(ProgressReportStatus.Submitted,
+            (await db.ProgressReports.FindAsync(report.Id))!.Status);
+    }
+
+    /// <summary>Biên bản họp không phải bản báo cáo của PI — chỉ có biên bản thì vẫn thiếu báo cáo.</summary>
+    [Fact]
+    public async Task Evaluate_ChiCoBienBan_KhongTinhLaBaoCaoCuaPi()
+    {
+        var (db, report) = await SeedSubmittedReportAsync(reportFileUrl: null, withAttachment: false);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            MakeService(db).EvaluateAsync(report.Id,
+                new EvaluateProgressReportRequest { EvaluationResult = "PASS" }, Guid.NewGuid()));
+
+        Assert.Contains("chưa có file đính kèm lẫn link", ex.Message);
     }
 }

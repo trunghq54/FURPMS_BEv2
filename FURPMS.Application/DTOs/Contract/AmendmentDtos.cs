@@ -20,6 +20,19 @@ public class AmendmentListResponse
     public DateTime? ReviewedAt { get; set; }
 }
 
+/// <summary>
+/// Một đơn điều chỉnh đang CHỜ DUYỆT, kèm đủ ngữ cảnh để Phòng QLKH xử lý ngay từ danh sách chung
+/// (01/10). Trước đó đơn chỉ nằm trong tab "Điều chỉnh" của từng hợp đồng — PI gửi xong không ai
+/// biết, còn menu "Yêu cầu thay đổi" của Staff lại trỏ tới một luồng khác duyệt xong không có tác dụng.
+/// </summary>
+public class PendingAmendmentResponse : AmendmentListResponse
+{
+    public string? CategoryCode { get; set; }
+    public string? ContractNumber { get; set; }
+    public string? ProjectTitle { get; set; }
+    public string? PiName { get; set; }
+}
+
 public class AmendmentDetailResponse : AmendmentListResponse
 {
     public decimal? ChangePercentage { get; set; }

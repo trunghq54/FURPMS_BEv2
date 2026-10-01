@@ -33,8 +33,11 @@ public interface IProposalDocumentService
     Task<(Stream Stream, string ContentType, string FileName)> DownloadEvidenceAsync(Guid documentId);
 
     // BM06 — file báo cáo tiến độ: PI upload PDF; Staff phải xem được file rồi mới đánh giá Đạt/Không đạt.
+    /// <param name="category">"PROGRESS_REPORT" (mặc định — file PI nộp) hoặc "PROGRESS_MINUTES" (biên bản họp
+    /// Hội đồng đánh giá tiến độ, Phòng QLKH tải lên khi ghi nhận kết luận — QĐ543 Điều 10.1).</param>
     Task<ProposalDocumentDto> UploadForProgressReportAsync(
-        Guid reportId, Stream content, string fileName, string contentType, long length, Guid uploadedBy);
+        Guid reportId, Stream content, string fileName, string contentType, long length, Guid uploadedBy,
+        string category = "PROGRESS_REPORT");
     Task<IEnumerable<ProposalDocumentDto>> ListForProgressReportAsync(Guid reportId);
 
     // Sản phẩm + minh chứng thử nghiệm (QĐ543 Điều 13.1) — chỗ cuối cùng còn dán URL.

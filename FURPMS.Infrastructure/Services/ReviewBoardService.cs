@@ -23,10 +23,14 @@ public class ReviewBoardService : IReviewBoardService
     private readonly FURPMSDbContext _db;
     private readonly IDecisionLogger _decisions;
 
+    private readonly ISystemSettingService _settings;
+
     public ReviewBoardService(
         IReviewRepository review, IProposalRepository proposals, ICycleRepository cycles,
-        IDeadlineResolver deadlines, IClock clock, FURPMSDbContext db, IDecisionLogger decisions)
+        IDeadlineResolver deadlines, IClock clock, FURPMSDbContext db, IDecisionLogger decisions,
+        ISystemSettingService settings)
     {
+        _settings = settings;
         _review = review;
         _proposals = proposals;
         _cycles = cycles;
@@ -53,12 +57,15 @@ public class ReviewBoardService : IReviewBoardService
                 ProposalId = p.Id,
                 TitleVi = p.TitleVi,
                 ProjectStatus = p.Project.Status,
-                PiUserId = p.Project.PiUserId
+                PiUserId = p.Project.PiUserId,
+                PiName = p.Project.PiUser.FullName
             })
             .ToListAsync();
 
         var titleByProjectId = trackProposals.ToDictionary(p => p.ProjectId, p => p.TitleVi);
         var piByProjectId = trackProposals.ToDictionary(p => p.ProjectId, p => p.PiUserId);
+        var proposalByProjectId = trackProposals.ToDictionary(p => p.ProjectId, p => (Guid?)p.ProposalId);
+        var piNameByProjectId = trackProposals.ToDictionary(p => p.ProjectId, p => p.PiName);
 
         var rounds = await _review.ReviewRounds
             .Include(r => r.ProjectRounds)
@@ -78,12 +85,14 @@ public class ReviewBoardService : IReviewBoardService
         {
             var extra = await _proposals.Query().IgnoreQueryFilters()
                 .Where(p => p.IsCurrent && missingProjectIds.Contains(p.ProjectId))
-                .Select(p => new { p.ProjectId, p.TitleVi, p.Project.PiUserId })
+                .Select(p => new { p.ProjectId, p.Id, p.TitleVi, p.Project.PiUserId, PiName = p.Project.PiUser.FullName })
                 .ToListAsync();
             foreach (var p in extra)
             {
                 titleByProjectId[p.ProjectId] = p.TitleVi;
                 piByProjectId[p.ProjectId] = p.PiUserId;
+                proposalByProjectId[p.ProjectId] = p.Id;
+                piNameByProjectId[p.ProjectId] = p.PiName;
             }
         }
 
@@ -102,6 +111,8 @@ public class ReviewBoardService : IReviewBoardService
         var effectiveDeadlines = await _deadlines.EffectiveManyAsync(
             IDeadlineResolver.TargetTypeReviewRound, roundsWithDeadline);
         var today = DateOnly.FromDateTime(_clock.UtcNow);
+        var meetingWorkingDays = await _settings.GetIntAsync(
+            SystemSettingKeys.MeetingDeadlineWorkingDays, SystemSettingKeys.DefaultMeetingDeadlineWorkingDays);
 
         var boardRounds = rounds.Select(r =>
         {
@@ -140,18 +151,27 @@ public class ReviewBoardService : IReviewBoardService
                 ScoringDeadline = effectiveDeadline,
                 IsScoringOverdue = isOverdue,
                 ScoringDaysLeft = daysLeft,
+                IsScoringExtended = effectiveDeadlines.ContainsKey(r.Id.ToString()),
+                OpenedAt = r.OpenedAt?.ToString("yyyy-MM-dd"),
+                ClosedAt = r.ClosedAt?.ToString("yyyy-MM-dd"),
                 Projects = r.ProjectRounds.Select(pr => new ReviewBoardProjectRoundDto
                 {
                     ProjectId = pr.ProjectId,
                     TitleVi = titleByProjectId.GetValueOrDefault(pr.ProjectId, "—"),
                     Status = pr.Status,
                     Result = pr.Result,
-                    PiUserId = piByProjectId.GetValueOrDefault(pr.ProjectId)
+                    PiUserId = piByProjectId.GetValueOrDefault(pr.ProjectId),
+                    ProposalId = proposalByProjectId.GetValueOrDefault(pr.ProjectId),
+                    PiName = piNameByProjectId.GetValueOrDefault(pr.ProjectId)
                 }).ToList(),
                 Councils = roundCouncils.Select(c => new ReviewBoardCouncilDto
                 {
                     Id = c.Id,
                     Status = c.Status,
+                    EstablishedAt = c.EstablishedAt?.ToString("yyyy-MM-dd"),
+                    MeetingDeadline = (c.MeetingDeadline ?? DeriveMeetingDeadline(c.EstablishedAt, meetingWorkingDays))
+                        ?.ToString("yyyy-MM-dd"),
+                    IsMeetingDeadlineDerived = c.MeetingDeadline is null && c.EstablishedAt is not null,
                     ProjectIds = c.ProjectAssignments.Select(a => a.ProjectId).ToList(),
                     Members = c.Members.Select(MapMember).ToList()
                 }).ToList()
@@ -474,6 +494,22 @@ public class ReviewBoardService : IReviewBoardService
     }
 
     private static CouncilMemberResponse MapMember(CouncilMember m) => ReviewShared.MapMember(m);
+
+    /// <summary>
+    /// Hạn họp suy ra khi hội đồng chưa ghi hạn: ngày lập + N ngày LÀM VIỆC (bỏ thứ Bảy, Chủ nhật)
+    /// — QĐ543 Điều 8.3.a. Đếm đúng ngày làm việc chứ không nhân 7/5, để mốc trên màn khớp lịch thật.
+    /// </summary>
+    internal static DateOnly? DeriveMeetingDeadline(DateOnly? establishedAt, int workingDays)
+    {
+        if (establishedAt is not { } d) return null;
+        var left = workingDays;
+        while (left > 0)
+        {
+            d = d.AddDays(1);
+            if (d.DayOfWeek is not (DayOfWeek.Saturday or DayOfWeek.Sunday)) left--;
+        }
+        return d;
+    }
 
     private static ReviewRoundResponse MapToResponse(ReviewRound r) => new()
     {

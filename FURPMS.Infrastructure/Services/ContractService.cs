@@ -41,7 +41,11 @@ public class ContractService : IContractService
         .Include(c => c.Project)
             .ThenInclude(p => p.Proposals.Where(x => x.IsCurrent))
         .Include(c => c.Project)
-            .ThenInclude(p => p.PiUser);
+            .ThenInclude(p => p.PiUser)
+        // Loại đề tài: màn chi tiết hợp đồng cần nó (số kỳ báo cáo mặc định, tên loại). Trước 01/10
+        // không nạp ⇒ chi tiết trả researchTypeName = null, còn danh sách thì có — hai màn lệch nhau.
+        .Include(c => c.Project)
+            .ThenInclude(p => p.ResearchType);
 
     public async Task<IEnumerable<ContractListResponse>> GetListAsync(Guid? piUserId = null)
     {
@@ -63,6 +67,7 @@ public class ContractService : IContractService
                 ResearchTypeId = c.Project.ResearchTypeId,
                 ResearchTypeCode = c.Project.ResearchType.Code,
                 ResearchTypeName = c.Project.ResearchType.Name,
+                DefaultProgressRounds = c.Project.ResearchType.RequireOrderingUnit ? 2 : 1,
                 CycleId = c.Project.CycleTrack.CycleId,
                 CycleCode = c.Project.CycleTrack.Cycle.SemesterCode
                     ?? c.Project.CycleTrack.Cycle.CycleYear.ToString(),
@@ -436,6 +441,7 @@ public class ContractService : IContractService
         ResearchTypeId = c.Project?.ResearchTypeId ?? 0,
         ResearchTypeCode = c.Project?.ResearchType?.Code,
         ResearchTypeName = c.Project?.ResearchType?.Name,
+        DefaultProgressRounds = c.Project?.ResearchType?.RequireOrderingUnit == true ? 2 : 1,
         CycleId = c.Project?.CycleTrack?.CycleId ?? 0,
         CycleCode = c.Project?.CycleTrack?.Cycle?.SemesterCode
             ?? c.Project?.CycleTrack?.Cycle?.CycleYear.ToString(),
@@ -464,6 +470,7 @@ public class ContractService : IContractService
         ResearchTypeId = c.Project?.ResearchTypeId ?? 0,
         ResearchTypeCode = c.Project?.ResearchType?.Code,
         ResearchTypeName = c.Project?.ResearchType?.Name,
+        DefaultProgressRounds = c.Project?.ResearchType?.RequireOrderingUnit == true ? 2 : 1,
         CycleId = c.Project?.CycleTrack?.CycleId ?? 0,
         CycleCode = c.Project?.CycleTrack?.Cycle?.SemesterCode
             ?? c.Project?.CycleTrack?.Cycle?.CycleYear.ToString(),

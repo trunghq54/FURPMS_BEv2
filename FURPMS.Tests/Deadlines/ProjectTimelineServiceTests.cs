@@ -395,4 +395,36 @@ public class ProjectTimelineServiceTests
 
         Assert.DoesNotContain(dto.Stages, s => s.IsPlanned);
     }
+
+    // ── 12: báo cáo tiến độ / sản phẩm / giải ngân chạy SONG SONG ──────────────
+    /// <summary>
+    /// Hợp đồng đã ký, một sản phẩm nộp sớm, chưa tạo kỳ báo cáo nào: lộ trình vẫn phải nhắc "Báo cáo
+    /// tiến độ" — trước 01/10 bước xong muộn nhất (sản phẩm, order 60) làm mất luôn dòng này (order 50).
+    /// </summary>
+    [Fact]
+    public async Task SanPhamNopSom_VanHienBaoCaoTienDoChuaToi()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var (project, piId, _, _) = await SeedProjectAsync(db, Today.AddDays(-30));
+        var contract = new Contract
+        {
+            Id = Guid.NewGuid(), ProjectId = project.Id, ContractNumber = "HĐ-SS",
+            TotalAmount = 100_000_000m, StartDate = Today, SignedAt = DateTime.UtcNow,
+            EndDate = Today.AddMonths(9), OriginalEndDate = Today.AddMonths(9),
+            Status = ContractStatus.Active
+        };
+        db.Contracts.Add(contract);
+        db.ProjectDeliverables.Add(new ProjectDeliverable
+        {
+            ProjectId = project.Id, ContractId = contract.Id, ProductName = "Phần mềm",
+            DueDate = Today.AddMonths(3), SubmittedAt = DateTime.UtcNow, Sequence = 1
+        });
+        await db.SaveChangesAsync();
+
+        var dto = await MakeSvc(db, ClockAtToday()).GetAsync(project.Id, piId, Array.Empty<string>());
+
+        var progress = Assert.Single(dto.Stages, s => s.Code == StageCodes.ProgressReport);
+        Assert.Equal(StageStatus.NotStarted, progress.Status);
+        Assert.Contains("tab Báo cáo tiến độ", progress.DeadlineBasis);
+    }
 }

@@ -37,7 +37,7 @@ public class ProgressReportsController : ControllerBase
     // POST /api/progress-reports/{id}/documents — chỉ PI của đề tài (hoặc Staff/Admin nộp hộ)
     [ProducesResponseType(typeof(ApiResponse<ProposalDocumentDto>), StatusCodes.Status200OK)]
     [HttpPost("{id:guid}/documents")]
-    public async Task<IActionResult> UploadDocument(Guid id, IFormFile file)
+    public async Task<IActionResult> UploadDocument(Guid id, IFormFile file, [FromQuery] string? kind = null)
     {
         if (file == null || file.Length == 0)
             throw new ArgumentException("Chưa chọn file hoặc file rỗng.");
@@ -47,9 +47,15 @@ public class ProgressReportsController : ControllerBase
         if (!isStaffOrAdmin && !await _service.IsPiOfReportAsync(id, userId))
             throw new ForbiddenException("Chỉ chủ nhiệm đề tài được nộp file báo cáo này.");
 
+        // Biên bản họp Hội đồng đánh giá tiến độ (QĐ543 Điều 10.1) — Phòng QLKH tải lên, PI không được.
+        var isMinutes = string.Equals(kind, "minutes", StringComparison.OrdinalIgnoreCase);
+        if (isMinutes && !isStaffOrAdmin)
+            throw new ForbiddenException("Chỉ Phòng QLKH được tải biên bản họp hội đồng đánh giá tiến độ.");
+
         await using var stream = file.OpenReadStream();
         var result = await _docs.UploadForProgressReportAsync(
-            id, stream, file.FileName, file.ContentType, file.Length, userId);
+            id, stream, file.FileName, file.ContentType, file.Length, userId,
+            isMinutes ? "PROGRESS_MINUTES" : "PROGRESS_REPORT");
         return Ok(ApiResponse<ProposalDocumentDto>.Ok(result, "Đã tải file báo cáo lên."));
     }
 

@@ -56,6 +56,15 @@ public class AmendmentsController : ControllerBase
     /// đè lên bản gốc: mỗi thay đổi phải có văn bản riêng ghi rõ <em>trước → sau</em>.
     /// Trả **409** nếu đề nghị chưa được duyệt — in bản chờ duyệt ra là tạo giấy tờ khống.
     /// </summary>
+    /// <summary>Đơn điều chỉnh (BM07) đang chờ duyệt của MỌI hợp đồng — màn "Yêu cầu điều chỉnh" của Staff.</summary>
+    [HttpGet("pending")]
+    [Authorize(Roles = "Admin,Staff")]
+    public async Task<IActionResult> GetPending()
+    {
+        var result = await _service.GetPendingAsync();
+        return Ok(ApiResponse<IEnumerable<PendingAmendmentResponse>>.Ok(result));
+    }
+
     [HttpGet("{id:guid}/export-word")]
     [Authorize]
     public async Task<IActionResult> ExportWord(Guid id)

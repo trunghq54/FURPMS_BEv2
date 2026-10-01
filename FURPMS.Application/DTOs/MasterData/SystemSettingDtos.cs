@@ -35,6 +35,12 @@ public class CouncilPolicyResponse
     public bool AllowRespondOnBehalf { get; set; }
 }
 
+/// <summary>Giá trị mặc định khi lập hợp đồng — Staff đọc được để form hiện sẵn tên thật.</summary>
+public class ContractDefaultsResponse
+{
+    public string SideARepresentative { get; set; } = string.Empty;
+}
+
 public class UploadPolicyResponse
 {
     public int MaxFileSizeMb { get; set; }

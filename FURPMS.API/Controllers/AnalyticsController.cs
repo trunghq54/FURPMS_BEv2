@@ -116,7 +116,12 @@ public class AnalyticsController : ControllerBase
         // Đếm cả hai bảng phiếu: chấm điểm (xét duyệt) và Đạt/Không đạt (nghiệm thu).
         var roundIds = await _db.ReviewRounds
             .OrderByDescending(r => r.Id).Take(6)
-            .Select(r => new { r.Id, r.RoundNumber })
+            .Select(r => new
+            {
+                r.Id, r.RoundNumber, r.RoundType,
+                SessionNo = _db.ReviewRounds.Count(x => x.CycleTrackId == r.CycleTrackId
+                    && x.RoundType == r.RoundType && x.RoundNumber <= r.RoundNumber)
+            })
             .ToListAsync();
 
         var reviewProgress = new List<object>();
@@ -126,7 +131,7 @@ public class AnalyticsController : ControllerBase
                 .Where(c => c.RoundId == r.Id).Select(c => c.Id).ToListAsync();
             if (councilIds.Count == 0)
             {
-                reviewProgress.Add(new { label = $"Vòng {r.RoundNumber}", completed = 0, pending = 0 });
+                reviewProgress.Add(new { label = ReviewRoundNaming.Label(r.RoundType, r.SessionNo), completed = 0, pending = 0 });
                 continue;
             }
 
@@ -143,7 +148,7 @@ public class AnalyticsController : ControllerBase
 
             reviewProgress.Add(new
             {
-                label = $"Vòng {r.RoundNumber}",
+                label = ReviewRoundNaming.Label(r.RoundType, r.SessionNo),
                 completed,
                 pending = Math.Max(0, expected - completed),
             });

@@ -144,7 +144,8 @@ public static class TestServices
         new DeadlineResolver(new CycleRepository(db)),
         clock ?? new FakeClock(),
         db,
-        Decisions(db, clock));
+        Decisions(db, clock),
+        new SystemSettingService(new MasterDataRepository(db)));
 
     public static DuplicateCheckService DuplicateChecks(FURPMSDbContext db, IClock? clock = null) => new(
         db,

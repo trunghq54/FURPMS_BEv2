@@ -11,7 +11,13 @@ public static class DuplicateSeverity
     public const string High = "HIGH";
 }
 
-/// <summary>Kết luận của Phòng QLKH sau khi xem cảnh báo.</summary>
+/// <summary>
+/// Kết luận của Phòng QLKH sau khi xem cảnh báo.
+/// <para>Từ 01/10 chỉ còn HAI lựa chọn (thầy góp ý): không trùng → xét duyệt tiếp; trùng → TỪ CHỐI
+/// đề cương. Trước đó có thêm "cần chỉnh sửa" và cả "trùng lặp" lẫn "cần chỉnh sửa" đều KHÔNG tác
+/// động gì tới đề cương — chọn xong đề cương vẫn đi tiếp vào vòng chấm như chưa có gì.
+/// <see cref="NeedsRevision"/> giữ lại chỉ để đọc dữ liệu cũ, API không nhận nữa.</para>
+/// </summary>
 public static class DuplicateVerdict
 {
     public const string NotDuplicate = "NOT_DUPLICATE";

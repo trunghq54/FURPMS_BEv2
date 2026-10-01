@@ -234,8 +234,12 @@ public class ProposalDocumentService : IProposalDocumentService
     private const string EntityTypeProgressReport = "ProgressReport";
 
     public async Task<ProposalDocumentDto> UploadForProgressReportAsync(
-        Guid reportId, Stream content, string fileName, string contentType, long length, Guid uploadedBy)
+        Guid reportId, Stream content, string fileName, string contentType, long length, Guid uploadedBy,
+        string category = "PROGRESS_REPORT")
     {
+        if (category is not ("PROGRESS_REPORT" or "PROGRESS_MINUTES"))
+            throw new ArgumentException("Loại file kỳ báo cáo chỉ nhận PROGRESS_REPORT hoặc PROGRESS_MINUTES.");
+
         var (name, ext) = await AssertUploadAllowedAsync(fileName, length);
 
         var blobName = $"progress-reports/{reportId}/{Guid.NewGuid():N}{ext}";
@@ -245,7 +249,7 @@ public class ProposalDocumentService : IProposalDocumentService
         {
             EntityType = EntityTypeProgressReport,
             EntityId = reportId.ToString(),
-            DocumentCategory = "PROGRESS_REPORT",
+            DocumentCategory = category,
             OriginalFileName = name,
             FileSizeBytes = length,
             MimeType = string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType,

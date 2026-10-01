@@ -58,6 +58,20 @@ public class SystemSettingsController : ControllerBase
         return Ok(ApiResponse<CouncilPolicyResponse>.Ok(result));
     }
 
+    /// <summary>
+    /// Mặc định khi lập hợp đồng (01/10). Trước đây ô "Đại diện Bên A" để trống kèm chữ "để trống
+    /// dùng tên mặc định" — người dùng không biết tên mặc định là ai. Thầy góp ý: hiện luôn tên,
+    /// muốn đổi thì vào Cấu hình. Staff không đọc được endpoint chỉ-Admin nên tách riêng giá trị này.
+    /// </summary>
+    [HttpGet("contract-defaults")]
+    public async Task<ActionResult<ApiResponse<ContractDefaultsResponse>>> GetContractDefaults()
+    {
+        var name = await _service.GetStringAsync(
+            FURPMS.Application.Constants.SystemSettingKeys.ContractSideARepresentative,
+            FURPMS.Application.Constants.SystemSettingKeys.DefaultContractSideARepresentative);
+        return Ok(ApiResponse<ContractDefaultsResponse>.Ok(new ContractDefaultsResponse { SideARepresentative = name }));
+    }
+
     [HttpPut("{key}")]
     [Authorize(Roles = "Admin")]
     public async Task<ActionResult<ApiResponse<SystemSettingResponse>>> Update(

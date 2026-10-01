@@ -266,7 +266,7 @@ public class DeadlineReminderScanner : IDeadlineReminderScanner
     {
         var rounds = await _review.ReviewRounds
             .Where(r => r.Status == ReviewRoundStatus.Open && r.ScoringDeadline != null)
-            .Select(r => new { r.Id, r.RoundNumber, r.RoundType, r.ScoringDeadline })
+            .Select(r => new { r.Id, r.RoundNumber, r.RoundType, r.ScoringDeadline, r.CycleTrackId })
             .ToListAsync(ct);
 
         foreach (var round in rounds)
@@ -282,13 +282,18 @@ public class DeadlineReminderScanner : IDeadlineReminderScanner
             if (await AlreadySentAsync("ReviewRound", entityId, type, ct)) continue;
 
             var overdue = type == "DEADLINE_OVERDUE";
+            // Gọi theo loại + số phiên trong loại đó (ReviewRoundNaming) — "Vòng 3" làm người đọc
+            // tưởng đề tài phải qua 3 vòng.
+            var sessionNo = await _review.ReviewRounds.CountAsync(x => x.CycleTrackId == round.CycleTrackId
+                && x.RoundType == round.RoundType && x.RoundNumber <= round.RoundNumber, ct);
+            var name = ReviewRoundNaming.Label(round.RoundType, sessionNo);
             var title = overdue
-                ? $"Vòng {round.RoundNumber} đã quá hạn chấm"
-                : $"Vòng {round.RoundNumber} còn {due.DayNumber - today.DayNumber} ngày phải chấm xong";
+                ? $"{name} đã quá hạn chấm"
+                : $"{name} còn {due.DayNumber - today.DayNumber} ngày phải chấm xong";
             var body = overdue
-                ? $"Vòng chấm số {round.RoundNumber} quá hạn từ {due:dd/MM/yyyy} mà chưa chốt kết quả. " +
-                  "Hệ thống KHÔNG tự đóng vòng — kết luận vẫn do Chủ tịch hội đồng quyết."
-                : $"Vòng chấm số {round.RoundNumber} phải xong trước {due:dd/MM/yyyy}.";
+                ? $"Phiên chấm \"{name}\" quá hạn từ {due:dd/MM/yyyy} mà chưa chốt kết quả. " +
+                  "Hệ thống KHÔNG tự đóng phiên — kết luận vẫn do Chủ tịch hội đồng quyết."
+                : $"Phiên chấm \"{name}\" phải xong trước {due:dd/MM/yyyy}.";
 
             await _notifier.NotifyRoleAsync("Staff", type, title, body,
                 actionUrl: "/review-board",

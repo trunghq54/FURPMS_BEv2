@@ -12,6 +12,13 @@ public class ContractListResponse
     public int ResearchTypeId { get; set; }
     public string? ResearchTypeCode { get; set; }
     public string? ResearchTypeName { get; set; }
+
+    /// <summary>
+    /// Số kỳ báo cáo tiến độ mặc định theo loại đề tài — QĐ543 Điều 10.1: Ứng dụng (có đặt hàng) 2 kỳ,
+    /// Cơ bản 1 kỳ. Trả kèm (01/10) để màn tạo kỳ báo cáo XEM TRƯỚC được lịch trước khi bấm tạo;
+    /// không suy từ mã loại vì mã "APPLIED" không đồng nghĩa có đặt hàng.
+    /// </summary>
+    public int DefaultProgressRounds { get; set; } = 1;
     public int CycleId { get; set; }
     public string? CycleCode { get; set; }
     public int TrackId { get; set; }
@@ -44,6 +51,13 @@ public class ContractDetailResponse
     public int ResearchTypeId { get; set; }
     public string? ResearchTypeCode { get; set; }
     public string? ResearchTypeName { get; set; }
+
+    /// <summary>
+    /// Số kỳ báo cáo tiến độ mặc định theo loại đề tài — QĐ543 Điều 10.1: Ứng dụng (có đặt hàng) 2 kỳ,
+    /// Cơ bản 1 kỳ. Trả kèm (01/10) để màn tạo kỳ báo cáo XEM TRƯỚC được lịch trước khi bấm tạo;
+    /// không suy từ mã loại vì mã "APPLIED" không đồng nghĩa có đặt hàng.
+    /// </summary>
+    public int DefaultProgressRounds { get; set; } = 1;
     public int CycleId { get; set; }
     public string? CycleCode { get; set; }
     public int TrackId { get; set; }

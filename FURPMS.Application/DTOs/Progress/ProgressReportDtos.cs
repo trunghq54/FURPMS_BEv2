@@ -32,6 +32,12 @@ public class ProgressReportSummaryDto
     public int? DaysLeft { get; set; }
     public DateTime? ScheduledMeetingAt { get; set; }
     public string? MeetingLink { get; set; }
+    // Kết luận Hội đồng đánh giá tiến độ (QĐ543 Điều 10.1). Trước 01/10 chỉ có ở bản chi tiết nên
+    // danh sách (Staff lẫn PI) không bao giờ hiện kết luận, và Staff vẫn thấy nút đánh giá sau khi
+    // đã đánh giá xong.
+    public string? EvaluationResult { get; set; }
+    public string? EvaluationComments { get; set; }
+    public DateTime? EvaluatedAt { get; set; }
 }
 
 public class ProgressReportDto : ProgressReportSummaryDto
@@ -40,9 +46,6 @@ public class ProgressReportDto : ProgressReportSummaryDto
     public string? PendingContent { get; set; }
     public string? NextPeriodPlan { get; set; }
     public string? PiRecommendations { get; set; }
-    public string? EvaluationResult { get; set; }
-    public string? EvaluationComments { get; set; }
-    public DateTime? EvaluatedAt { get; set; }
     public List<ProgressReportItemDto> Items { get; set; } = new();
 }
 

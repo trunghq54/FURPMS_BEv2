@@ -15,12 +15,15 @@ public class AmendmentService : IAmendmentService
     private readonly IMasterDataRepository _masterData;
     private readonly IClock _clock;
     private readonly IDecisionLogger _decisions;
+    private readonly INotifier? _notifier;
 
     public AmendmentService(IContractRepository contracts, IMasterDataRepository masterData,
         IClock clock,
-        IDecisionLogger decisions)
+        IDecisionLogger decisions,
+        INotifier? notifier = null)
     {
         _decisions = decisions;
+        _notifier = notifier;
         _contracts = contracts;
         _masterData = masterData;
         _clock = clock;
@@ -38,6 +41,32 @@ public class AmendmentService : IAmendmentService
             .ToListAsync();
 
         return items.Select(MapList);
+    }
+
+    public async Task<IEnumerable<PendingAmendmentResponse>> GetPendingAsync()
+    {
+        var items = await _contracts.Amendments
+            .Include(a => a.Category)
+            .Include(a => a.Contract).ThenInclude(c => c.Project).ThenInclude(p => p.PiUser)
+            .Where(a => a.Status == AmendmentStatus.Pending)
+            .OrderBy(a => a.RequestedAt)
+            .ToListAsync();
+
+        return items.Select(a =>
+        {
+            var basic = MapList(a);
+            return new PendingAmendmentResponse
+            {
+                Id = basic.Id, ContractId = basic.ContractId, CategoryId = basic.CategoryId,
+                CategoryName = basic.CategoryName, ChangeDescription = basic.ChangeDescription,
+                Justification = basic.Justification, Status = basic.Status, RequestedAt = basic.RequestedAt,
+                OldValue = basic.OldValue, NewValue = basic.NewValue,
+                CategoryCode = a.Category?.Code,
+                ContractNumber = a.Contract?.ContractNumber,
+                ProjectTitle = a.Contract?.Project?.TitleVi,
+                PiName = a.Contract?.Project?.PiUser?.FullName
+            };
+        });
     }
 
     public async Task<AmendmentDetailResponse> GetByIdAsync(Guid amendmentId)
@@ -77,6 +106,13 @@ public class AmendmentService : IAmendmentService
         };
         await _contracts.AddAmendmentAsync(amendment);
         await _contracts.SaveChangesAsync();
+
+        // Trước 01/10 PI gửi đơn xong Phòng QLKH không hề được báo.
+        if (_notifier is not null)
+            await _notifier.NotifyRoleAsync("Staff", "AMENDMENT_SUBMITTED",
+                "Có đơn đề nghị điều chỉnh mới (BM07)",
+                $"Hợp đồng {contract.ContractNumber} — đề tài \"{contract.Project?.TitleVi}\": {amendment.ChangeDescription}",
+                actionUrl: "/change-requests", entityType: "AmendmentRequest", entityId: amendment.Id.ToString());
 
         return await GetByIdAsync(amendment.Id);
     }
@@ -118,6 +154,7 @@ public class AmendmentService : IAmendmentService
             decidedBy: reviewedBy, decidedByRole: "Phòng QLKH");
 
         await _contracts.SaveChangesAsync();
+        await NotifyPiAsync(contract.Project?.PiUserId, amendment, approved: true);
         return MapDetail(amendment);
     }
 
@@ -152,7 +189,24 @@ public class AmendmentService : IAmendmentService
                 decidedBy: reviewedBy, decidedByRole: "Phòng QLKH");
 
         await _contracts.SaveChangesAsync();
+        var rejectPiId = await _contracts.Query()
+            .Where(c => c.Id == amendment.ContractId)
+            .Select(c => (Guid?)c.Project.PiUserId)
+            .FirstOrDefaultAsync();
+        await NotifyPiAsync(rejectPiId, amendment, approved: false);
         return MapDetail(amendment);
+    }
+
+    /// <summary>Báo kết quả đơn cho chủ nhiệm, kèm lý do của Phòng QLKH (trước 01/10 không báo gì).</summary>
+    private async Task NotifyPiAsync(Guid? piUserId, AmendmentRequest amendment, bool approved)
+    {
+        if (_notifier is null || piUserId is null) return;
+        var reason = string.IsNullOrWhiteSpace(amendment.ReviewerComments) ? "" : $" Ý kiến Phòng QLKH: {amendment.ReviewerComments}";
+        await _notifier.NotifyAsync(piUserId.Value, "AMENDMENT_REVIEWED",
+            approved ? "Đơn điều chỉnh đã được duyệt" : "Đơn điều chỉnh bị từ chối",
+            $"\"{amendment.ChangeDescription}\" — {(approved ? "đã duyệt" : "bị từ chối")}.{reason}",
+            actionUrl: "/my-amendments", entityType: "AmendmentRequest", entityId: amendment.Id.ToString(),
+            priority: approved ? "NORMAL" : "HIGH");
     }
 
     /// <summary>

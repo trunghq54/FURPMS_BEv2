@@ -308,19 +308,40 @@ public class DuplicateCheckService : IDuplicateCheckService
     public async Task<DuplicateCheckResponse> ReviewAsync(
         Guid proposalId, ReviewDuplicateRequest request, Guid reviewerId, IEnumerable<string> roles)
     {
-        var valid = new[] { DuplicateVerdict.NotDuplicate, DuplicateVerdict.NeedsRevision, DuplicateVerdict.Duplicate };
+        var valid = new[] { DuplicateVerdict.NotDuplicate, DuplicateVerdict.Duplicate };
         if (!valid.Contains(request.Verdict))
             throw new ArgumentException($"Kết luận chỉ nhận: {string.Join(", ", valid)}.");
 
-        // Kết luận "trùng" hoặc "cần sửa" mà không nói vì sao thì chủ nhiệm không biết phải làm gì,
-        // và hồ sơ sau này đọc lại cũng không hiểu.
+        // Từ chối vì trùng mà không nói trùng với cái gì thì chủ nhiệm không biết vì sao, và hồ sơ
+        // sau này đọc lại cũng không hiểu.
         var note = request.Note?.Trim();
-        if (request.Verdict != DuplicateVerdict.NotDuplicate && string.IsNullOrWhiteSpace(note))
+        var isDuplicate = request.Verdict == DuplicateVerdict.Duplicate;
+        if (isDuplicate && string.IsNullOrWhiteSpace(note))
             throw new ArgumentException(
-                "Kết luận có vấn đề về trùng lặp thì phải ghi rõ căn cứ — chủ nhiệm cần biết phải sửa gì.");
+                "Từ chối vì trùng lặp thì phải ghi rõ lý do (trùng với đề tài nào, ở điểm nào) — chủ nhiệm sẽ đọc lý do này.");
 
         var proposal = await LoadProposalAsync(proposalId);
         await AssertCanViewAsync(proposal.ProjectId, proposal.PiUserId, reviewerId, roles);
+
+        // Đề cương THẬT (được EF theo dõi) — kết luận "trùng lặp" phải từ chối nó, không chỉ ghi chú.
+        var entity = await _db.Proposals.IgnoreQueryFilters()
+            .Include(p => p.Project)
+            .FirstAsync(p => p.Id == proposalId);
+        if (entity.Status == ProposalStatus.Rejected)
+            throw new InvalidOperationException("Đề cương đã bị từ chối — không kết luận rà trùng lại được.");
+        if (isDuplicate && entity.Status is not (ProposalStatus.Submitted or ProposalStatus.RevisionRequired))
+            throw new InvalidOperationException(
+                "Chỉ từ chối vì trùng lặp được khi đề cương đang chờ xét duyệt. Đề cương này đã có kết quả của hội đồng.");
+        if (isDuplicate)
+        {
+            entity.Status = ProposalStatus.Rejected;
+            // Lý do nằm NGAY trên đề cương để trang của chủ nhiệm đọc được — trước 01/10 trường này
+            // có trong API nhưng không màn nào của PI hiển thị.
+            entity.RejectionReason = $"Trùng lặp với đề tài đã có (Phòng QLKH rà trùng): {note}";
+            entity.UpdatedAt = _clock.UtcNow;
+            entity.Project.Status = ProjectStatus.Cancelled;
+            entity.Project.UpdatedAt = _clock.UtcNow;
+        }
 
         var output = await _db.LlmOutputs
             .FirstOrDefaultAsync(o => o.EntityType == VectorEntityType && o.EntityId == proposalId.ToString()
@@ -355,7 +376,7 @@ public class DuplicateCheckService : IDuplicateCheckService
 
         _decisions.Log(
             proposal.ProjectId, DecisionTypes.DuplicateReviewed,
-            $"Kết luận rà trùng lặp: {VerdictVi(request.Verdict)}",
+            isDuplicate ? "Từ chối đề cương vì trùng lặp" : $"Kết luận rà trùng lặp: {VerdictVi(request.Verdict)}",
             VectorEntityType, proposalId.ToString(),
             result: request.Verdict, reason: note,
             decidedBy: reviewerId, decidedByRole: "Phòng QLKH");
@@ -365,24 +386,21 @@ public class DuplicateCheckService : IDuplicateCheckService
         // Trước đây kết luận chỉ nằm phía Staff — PI không hề biết đề cương mình có bị đối chiếu
         // hay không, kể cả khi kết luận là "cần chỉnh sửa"/"trùng lặp" và họ phải làm gì đó ngay.
         // Cùng lỗi cũ đã sửa ở luồng nộp đề cương: im lặng đúng chỗ người ta cần biết nhất.
-        var ketQua = request.Verdict switch
-        {
-            DuplicateVerdict.NotDuplicate => "không phát hiện trùng lặp đáng kể",
-            DuplicateVerdict.NeedsRevision => "cần chỉnh sửa để phân biệt rõ hơn với đề tài đã có",
-            DuplicateVerdict.Duplicate => "được đánh giá là trùng lặp",
-            _ => request.Verdict
-        };
+        var ketQua = isDuplicate
+            ? "trùng lặp với đề tài đã có — đề cương bị TỪ CHỐI"
+            : "không phát hiện trùng lặp đáng kể, đề cương được xét duyệt tiếp";
         await _notifier.NotifyAsync(
             proposal.PiUserId,
             "DUPLICATE_CHECK_REVIEWED",
-            "Kết quả rà trùng lặp đề cương",
+            isDuplicate ? "Đề cương bị từ chối vì trùng lặp" : "Kết quả rà trùng lặp đề cương",
             $"Đề cương \"{proposal.TitleVi}\" đã được Phòng QLKH đối chiếu với kho đề tài: {ketQua}."
-                + (string.IsNullOrWhiteSpace(note) ? "" : $" Ghi chú: {note}"),
+                + (string.IsNullOrWhiteSpace(note) ? "" : $" Lý do: {note}"),
             // Thiếu actionUrl thì thông báo chỉ là một dòng chữ thoáng qua trong chuông — bấm vào
             // không đi đâu cả, và một khi PI gạt qua thì kết luận biến mất khỏi tầm mắt vĩnh viễn.
             // Đưa thẳng về trang chi tiết đề cương, nơi vừa thêm thẻ kết luận cố định.
             actionUrl: $"/my-proposals/{proposalId}",
-            entityType: "Proposal", entityId: proposalId.ToString());
+            entityType: "Proposal", entityId: proposalId.ToString(),
+            priority: isDuplicate ? "HIGH" : "NORMAL");
 
         return await GetAsync(proposalId, reviewerId, roles);
     }
@@ -391,7 +409,7 @@ public class DuplicateCheckService : IDuplicateCheckService
     {
         DuplicateVerdict.NotDuplicate => "Không trùng lặp",
         DuplicateVerdict.NeedsRevision => "Cần chỉnh sửa để phân biệt",
-        DuplicateVerdict.Duplicate => "Trùng lặp",
+        DuplicateVerdict.Duplicate => "Trùng lặp — từ chối đề cương",
         _ => verdict
     };
 

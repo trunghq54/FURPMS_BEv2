@@ -296,12 +296,14 @@ public class ProjectTimelineService : IProjectTimelineService
                 scoring.DeadlineSource = scoring.IsExtended
                     ? StageDeadlineSource.Extension
                     : StageDeadlineSource.Derived;
-                scoring.DeadlineBasis = $"Vòng {round.RoundNumber} — {scoringWindowDays} ngày kể từ khi mở vòng";
+                // Không in "Vòng N": số vòng đếm theo cả LĨNH VỰC (vd vòng 1 của đề tài khác bị trượt
+                // thì đề tài này vào "vòng 2") — trên tiến trình của MỘT đề tài, con số đó gây hiểu nhầm.
+                scoring.DeadlineBasis = $"{scoringWindowDays} ngày kể từ khi mở vòng";
             }
             else
             {
                 // Vòng tạo trước 25/08 chưa có hạn. Nói thẳng "chưa đặt hạn" thay vì bịa ra một ngày.
-                scoring.DeadlineBasis = $"Vòng {round.RoundNumber} — chưa đặt hạn chấm";
+                scoring.DeadlineBasis = "Hạn chấm được đặt khi Phòng QLKH mở vòng";
             }
 
             stages.Add(scoring);
@@ -328,14 +330,15 @@ public class ProjectTimelineService : IProjectTimelineService
             {
                 // Suy ra để dòng thời gian không trống hoác, nhưng ghi rõ là SUY RA — hạn thật vẫn
                 // chưa ai đặt trên bản ghi hội đồng.
-                meeting.Deadline = Fmt(est.AddDays(meetingWorkingDays * 7 / 5));
+                // Đếm đúng ngày làm việc (bỏ T7/CN) — cùng phép tính với màn "Hội đồng & Chấm".
+                meeting.Deadline = ReviewBoardService.DeriveMeetingDeadline(est, meetingWorkingDays) is { } derived
+                    ? Fmt(derived) : null;
                 meeting.DeadlineSource = StageDeadlineSource.Derived;
                 meeting.DeadlineBasis = $"Suy ra: {meetingWorkingDays} ngày làm việc kể từ ngày lập hội đồng (QĐ543 Điều 8.3.a)";
             }
 
-            meeting.DeadlineBasis ??= isAcceptance
-                ? "Họp hội đồng nghiệm thu — chưa đặt hạn họp"
-                : "Họp hội đồng xét duyệt — chưa đặt hạn họp";
+            // Trước 01/10 ghi "chưa đặt hạn họp" — nghe như hệ thống thiếu sót. Nói luật thay vì nói thiếu.
+            meeting.DeadlineBasis ??= "QĐ543 Điều 8.3.a — họp trong 15 ngày làm việc kể từ khi lập hội đồng";
 
             stages.Add(meeting);
         }
@@ -533,7 +536,7 @@ public class ProjectTimelineService : IProjectTimelineService
         {
             (StageCodes.Review, 10, "Phòng QLKH đưa đề tài vào vòng chấm xét duyệt sau khi hết hạn nộp"),
             (StageCodes.ReviewMeeting, 11, "Hội đồng xét duyệt họp sau khi chấm xong (QĐ543 Điều 8.3)"),
-            (StageCodes.ProgressReport, 50, "Theo các kỳ báo cáo ghi trong hợp đồng (BM06)"),
+            (StageCodes.ProgressReport, 50, "Phòng QLKH tạo các kỳ báo cáo ở tab Báo cáo tiến độ của hợp đồng (BM06, QĐ543 Điều 10.1)"),
             (StageCodes.Deliverable, 60, "Các sản phẩm đã đăng ký trong hợp đồng"),
             (StageCodes.Disbursement, 70, "Theo điều kiện của từng đợt ghi trong hợp đồng"),
             (StageCodes.FinalReport, 80, "QĐ543 Điều 11.2.a — nộp ít nhất 30 ngày trước khi kết thúc đề tài"),
@@ -543,11 +546,19 @@ public class ProjectTimelineService : IProjectTimelineService
             (StageCodes.Archival, 100, $"{archivalDays} ngày kể từ khi báo cáo tổng kết được tiếp nhận"),
         };
 
-        var lastDoneOrder = stages.Where(s => s.ActualDate is not null).Select(s => s.Order).DefaultIfEmpty(0).Max();
+        var doneOrders = stages.Where(s => s.ActualDate is not null).Select(s => s.Order).ToList();
+        var lastDoneOrder = doneOrders.DefaultIfEmpty(0).Max();
+        // Báo cáo tiến độ (50), sản phẩm (60), giải ngân (70) chạy SONG SONG trong thời gian hợp đồng —
+        // một sản phẩm nộp xong KHÔNG có nghĩa đã bỏ qua báo cáo tiến độ. Với ba bước này chỉ coi là
+        // "đã bị vượt qua" khi đã sang hẳn giai đoạn sau (báo cáo tổng kết trở đi, order >= 80).
+        // Trước 01/10 so với bước xong muộn nhất nên hợp đồng có 1 sản phẩm nộp sớm là mất luôn dòng
+        // "Báo cáo tiến độ" trên lộ trình.
+        var lastDoneAfterExecution = doneOrders.Where(o => o >= 80).DefaultIfEmpty(0).Max();
 
         foreach (var (code, order, basis) in planned)
         {
-            if (order <= lastDoneOrder || stages.Any(s => s.Code == code)) continue;
+            var passedBy = order is >= 50 and < 80 ? lastDoneAfterExecution : lastDoneOrder;
+            if (order <= passedBy || stages.Any(s => s.Code == code)) continue;
             stages.Add(new ProjectStageDto { Code = code, Order = order, DeadlineBasis = basis, IsPlanned = true });
         }
     }

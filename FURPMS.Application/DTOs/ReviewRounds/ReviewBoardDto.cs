@@ -26,6 +26,9 @@ public class ReviewBoardProjectDto
     /// </para>
     /// </summary>
     public Guid PiUserId { get; set; }
+
+    /// <summary>Tên chủ nhiệm — hiện kèm tên đề tài trên màn (01/10).</summary>
+    public string? PiName { get; set; }
 }
 
 public class ReviewBoardRoundDto
@@ -45,6 +48,15 @@ public class ReviewBoardRoundDto
     public bool IsScoringOverdue { get; set; }
     /// <summary>Số ngày còn lại tới hạn, âm = quá hạn — máy chủ tính (xem <c>DeadlineMath</c>), FE không tự trừ ngày.</summary>
     public int? ScoringDaysLeft { get; set; }
+    /// <summary>Hạn chấm đã từng được dời (có dòng trong sổ gia hạn).</summary>
+    public bool IsScoringExtended { get; set; }
+
+    /// <summary>
+    /// Ngày mở / ngày chốt vòng (yyyy-MM-dd). Thêm 01/10 để màn hiện ĐỦ dải mốc thời gian cho
+    /// cả vòng đã chốt — trước đây vòng chốt rồi là mất sạch mốc, nhìn tưởng không có hạn.
+    /// </summary>
+    public string? OpenedAt { get; set; }
+    public string? ClosedAt { get; set; }
 
     public List<ReviewBoardProjectRoundDto> Projects { get; set; } = new();
     public List<ReviewBoardCouncilDto> Councils { get; set; } = new();
@@ -59,12 +71,26 @@ public class ReviewBoardProjectRoundDto
 
     /// <summary>Chủ nhiệm đề tài — giao diện dùng để loại khỏi danh sách chọn ủy viên (xem <see cref="ReviewBoardProjectDto.PiUserId"/>).</summary>
     public Guid PiUserId { get; set; }
+
+    /// <summary>Đề cương hiện hành + chủ nhiệm — để bấm vào tên đề tài xem nhanh (01/10).</summary>
+    public Guid? ProposalId { get; set; }
+    public string? PiName { get; set; }
 }
 
 public class ReviewBoardCouncilDto
 {
     public Guid Id { get; set; }
     public string Status { get; set; } = null!;
+
+    /// <summary>Ngày lập hội đồng (yyyy-MM-dd).</summary>
+    public string? EstablishedAt { get; set; }
+
+    /// <summary>
+    /// Hạn họp — QĐ543 Điều 8.3.a: họp trong 15 ngày làm việc kể từ khi lập. Lấy hạn đã ghi trên
+    /// hội đồng; chưa ghi thì SUY RA từ ngày lập và đánh dấu <see cref="IsMeetingDeadlineDerived"/>.
+    /// </summary>
+    public string? MeetingDeadline { get; set; }
+    public bool IsMeetingDeadlineDerived { get; set; }
     public List<Guid> ProjectIds { get; set; } = new();
     public IList<CouncilMemberResponse> Members { get; set; } = new List<CouncilMemberResponse>();
 }

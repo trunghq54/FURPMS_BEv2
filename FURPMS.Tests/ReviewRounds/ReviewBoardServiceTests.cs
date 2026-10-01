@@ -645,4 +645,73 @@ public class ReviewBoardServiceTests
 
         Assert.True(await db.ProjectRounds.AnyAsync(x => x.RoundId == acceptanceRound.Id && x.ProjectId == project.Id));
     }
+
+    // ── Dải mốc thời gian của vòng (01/10) ─────────────────────────────────────
+    /// <summary>
+    /// Vòng ĐÃ CHỐT vẫn phải trả đủ mốc (mở, hạn chấm, chốt) và hội đồng phải có hạn họp — trước
+    /// 01/10 vòng chốt rồi là màn mất sạch mốc, nhìn tưởng không có deadline. Hạn họp chưa ghi thì
+    /// suy ra 15 ngày LÀM VIỆC từ ngày lập (QĐ543 Điều 8.3.a), bỏ thứ Bảy/Chủ nhật.
+    /// </summary>
+    [Fact]
+    public async Task GetBoard_VongDaChot_VanCoDuMoc_VaHanHopSuyRaTheoNgayLamViec()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var clock = new FakeClock { UtcNow = new DateTime(2026, 7, 20, 0, 0, 0, DateTimeKind.Utc) };
+
+        db.ResearchTypes.Add(new ResearchType { Id = 1, Code = "APPLIED", Name = "Ứng dụng", IsActive = true });
+        db.ResearchTracks.Add(new ResearchTrack { Id = 1, Code = "IT", Name = "CNTT", IsActive = true });
+        var cycle = new ResearchCycle
+        {
+            CycleYear = 2026, SemesterCode = "SU26", ResearchTypeId = 1,
+            SubmissionOpenDate = new DateOnly(2026, 5, 1), SubmissionDeadline = new DateOnly(2026, 6, 1),
+            Status = "OPEN", CreatedBy = Guid.NewGuid()
+        };
+        db.ResearchCycles.Add(cycle);
+        await db.SaveChangesAsync();
+        var track = new CycleTrack { CycleId = cycle.Id, TrackId = 1 };
+        db.CycleTracks.Add(track);
+        await db.SaveChangesAsync();
+
+        var pi = MakeUser();
+        pi.FullName = "Nguyễn Văn Chủ Nhiệm";
+        db.Users.Add(pi);
+        var (project, proposal) = MakeProjectWithProposal(pi.Id, cycleTrackId: track.Id);
+        db.Projects.Add(project);
+        db.Proposals.Add(proposal);
+
+        var round = new ReviewRound
+        {
+            Id = Guid.NewGuid(), CycleTrackId = track.Id, RoundNumber = 1, Sequence = 1,
+            Dimension = "SCIENCE", RoundType = "REVIEW", Status = ReviewRoundStatus.Passed,
+            OpenedAt = new DateTime(2026, 6, 15, 8, 0, 0, DateTimeKind.Utc),
+            ClosedAt = new DateTime(2026, 7, 8, 8, 0, 0, DateTimeKind.Utc),
+            ScoringDeadline = new DateOnly(2026, 6, 30)
+        };
+        db.ReviewRounds.Add(round);
+        db.ProjectRounds.Add(new ProjectRound { ProjectId = project.Id, RoundId = round.Id, Status = ReviewRoundStatus.Passed });
+        // Lập thứ Sáu 19/06/2026, chưa ghi hạn họp ⇒ 15 ngày làm việc = thứ Sáu 10/07/2026.
+        db.ReviewCouncils.Add(new ReviewCouncil
+        {
+            Id = Guid.NewGuid(), RoundId = round.Id, CouncilType = "REVIEW", CreatedBy = Guid.NewGuid(),
+            EstablishedAt = new DateOnly(2026, 6, 19)
+        });
+        await db.SaveChangesAsync();
+
+        var board = await TestServices.ReviewBoards(db, clock).GetReviewBoardAsync(cycle.Id, track.TrackId);
+        var dto = Assert.Single(board.Rounds);
+
+        Assert.Equal("2026-06-15", dto.OpenedAt);
+        Assert.Equal("2026-07-08", dto.ClosedAt);
+        Assert.Equal("2026-06-30", dto.ScoringDeadline);
+        Assert.False(dto.IsScoringExtended);
+
+        var council = Assert.Single(dto.Councils);
+        Assert.Equal("2026-06-19", council.EstablishedAt);
+        Assert.Equal("2026-07-10", council.MeetingDeadline);
+        Assert.True(council.IsMeetingDeadlineDerived);
+
+        var row = Assert.Single(dto.Projects);
+        Assert.Equal(proposal.Id, row.ProposalId);
+        Assert.Equal("Nguyễn Văn Chủ Nhiệm", row.PiName);
+    }
 }
