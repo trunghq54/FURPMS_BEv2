@@ -4,6 +4,7 @@ using FURPMS.Application.Interfaces;
 using FURPMS.Application.Interfaces.Repositories;
 using FURPMS.Application.Interfaces.Services;
 using FURPMS.Domain.Entities.Contracts;
+using FURPMS.Domain.Entities.Financial;
 using Microsoft.EntityFrameworkCore;
 
 namespace FURPMS.Infrastructure.Services;
@@ -259,9 +260,31 @@ public class DisbursementService : IDisbursementService
 
     /// <summary>
     /// Sinh đợt giải ngân từ bảng mốc chuẩn của **loại đề tài** (QĐ543 Điều 16).
-    /// Chưa cấu hình mốc cho loại đó thì lùi về một đợt 100% sau nghiệm thu — thà ít đợt còn hơn
-    /// bịa ra lịch không có căn cứ.
+    /// <para>
+    /// Loại đề tài chưa có mốc nào thì sinh theo đúng Điều 16, dựa vào cờ <c>RequireOrderingUnit</c>
+    /// (cờ phân biệt Ứng dụng/Cơ bản trong cả hệ thống): Ứng dụng 4 đợt 30–30–30–10, Cơ bản 1 đợt
+    /// 100% sau nghiệm thu.
+    /// </para>
+    /// <para>
+    /// Sửa 01/10: trước đó thiếu mốc thì MỌI loại đều ra 1 đợt 100%. Mốc chỉ được seed cho loại có mã
+    /// đúng "APPLIED"/"BASIC" (mà hai loại này chỉ tự tạo ở môi trường dev), và không có màn nào cấu
+    /// hình mốc — nên trên bản deploy, loại "Ứng dụng" do nhóm tự tạo cũng chỉ có 1 đợt giải ngân.
+    /// </para>
     /// </summary>
+    /// <summary>Mốc mặc định theo QĐ543 Điều 16 khi loại đề tài chưa cấu hình mốc riêng.</summary>
+    private static List<DisbursementTemplate> DefaultTemplates(bool isApplied) => isApplied
+        ? new List<DisbursementTemplate>
+        {
+            new() { RoundNumber = 1, Percentage = 30m, ConditionDescription = "Sau khi ký kết Hợp đồng NCKH với Chủ nhiệm đề tài" },
+            new() { RoundNumber = 2, Percentage = 30m, ConditionDescription = "Sau khi đánh giá tiến độ giai đoạn 1 đạt yêu cầu" },
+            new() { RoundNumber = 3, Percentage = 30m, ConditionDescription = "Sau khi đánh giá tiến độ giai đoạn 2 đạt yêu cầu" },
+            new() { RoundNumber = 4, Percentage = 10m, ConditionDescription = "Sau khi Hội đồng nghiệm thu đánh giá \"Đạt\"" },
+        }
+        : new List<DisbursementTemplate>
+        {
+            new() { RoundNumber = 1, Percentage = 100m, ConditionDescription = "Sau khi Hội đồng nghiệm thu đánh giá \"Đạt\"" },
+        };
+
     private async Task<List<ContractDisbursement>> GenerateFromTemplateAsync(
         Domain.Entities.Contracts.Contract contract)
     {
@@ -272,18 +295,11 @@ public class DisbursementService : IDisbursementService
 
         if (templates.Count == 0)
         {
-            return new List<ContractDisbursement>
-            {
-                new()
-                {
-                    ContractId = contract.Id,
-                    RoundNumber = 1,
-                    Percentage = 100m,
-                    PlannedAmount = contract.TotalAmount,
-                    ConditionDescription = "Sau khi Hội đồng nghiệm thu đánh giá \"Đạt\"",
-                    Status = DisbursementStatus.Pending
-                }
-            };
+            var isApplied = await _masterData.ResearchTypes
+                .Where(t => t.Id == contract.Project.ResearchTypeId)
+                .Select(t => t.RequireOrderingUnit)
+                .FirstOrDefaultAsync();
+            templates = DefaultTemplates(isApplied);
         }
 
         var list = new List<ContractDisbursement>();

@@ -217,6 +217,17 @@ Thầy góp ý: cán bộ phòng không có chuyên môn để cho Đạt/Không
   đã có kết luận; `StatusBadge` tô màu PASS/CONDITIONAL/FAIL.
 - **Số 0 đứng đầu** ("05"): sửa chung trong `components/ui/input.tsx` — xem chi tiết dưới.
 
+### 1.4j 🔴 Deploy: đề tài Ứng dụng chỉ ra 1 đợt giải ngân + 1 kỳ báo cáo (01/10)
+
+- **Giải ngân:** mốc (`disbursement_templates`) chỉ được seed cho loại có mã đúng `APPLIED`/`BASIC`, mà hai loại này
+  chỉ tự tạo ở Development. Không màn nào cấu hình mốc ⇒ loại do nhóm tự tạo trên deploy không có mốc, và trước
+  đây thiếu mốc thì mọi loại đều ra 1 đợt 100%. Nay thiếu mốc thì sinh theo Điều 16 dựa vào
+  `RequireOrderingUnit` (4 đợt 30–30–30–10 / 1 đợt 100%).
+- **Báo cáo tiến độ:** số kỳ cũng dựa vào `RequireOrderingUnit`. Loại "Ứng dụng" trên deploy phải bật "Yêu cầu
+  đơn vị đặt hàng" ở Admin → Loại đề tài, nếu không vẫn chỉ có 1 kỳ.
+- Hợp đồng đã sinh lịch giải ngân không tự đổi (`GenerateAsync` từ chối sinh lại). Muốn test lại thì tạo hợp đồng
+  mới, hoặc xoá các đợt còn `PENDING` của hợp đồng đó.
+
 ### 1.4i Rà trùng còn 2 lựa chọn · một đường xin điều chỉnh · "vòng" → "phiên" (01/10)
 
 - **Rà trùng** (thầy góp ý): chỉ còn `NOT_DUPLICATE` / `DUPLICATE`. Trước đây có cả `NEEDS_REVISION`, và **cả

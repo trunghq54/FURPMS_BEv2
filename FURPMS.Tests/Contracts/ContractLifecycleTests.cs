@@ -200,8 +200,41 @@ public class ContractLifecycleTests
     }
 
     /// <summary>
-    /// Chưa cấu hình mốc cho loại đề tài thì lùi về MỘT đợt 100% sau nghiệm thu — thà ít đợt còn
-    /// hơn bịa ra lịch giải ngân không có căn cứ trong quy định.
+    /// Loại đề tài ỨNG DỤNG (RequireOrderingUnit) chưa có mốc nào vẫn phải ra 4 đợt 30–30–30–10.
+    /// Lỗi bắt được trên deploy 01/10: loại "Ứng dụng" do nhóm tự tạo (mã khác "APPLIED") không có
+    /// mốc ⇒ trước đây chỉ ra 1 đợt 100% y như đề tài cơ bản.
+    /// </summary>
+    [Fact]
+    public async Task Generate_NoTemplate_Applied_Creates4Tranches()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+
+        var pi = MakeUser();
+        var rt = MakeResearchType();
+        rt.RequireOrderingUnit = true;
+        db.Users.Add(pi);
+        db.ResearchTypes.Add(rt);
+        await db.SaveChangesAsync();
+
+        var (project, proposal) = MakeApprovedProposal(pi.Id, rt.Id);
+        db.Projects.Add(project);
+        db.Proposals.Add(proposal);
+        await db.SaveChangesAsync();
+
+        var contract = MakeContract(project.Id, 1_000_000m);
+        contract.Project = project;
+        db.Contracts.Add(contract);
+        await db.SaveChangesAsync();
+
+        var result = (await TestServices.Disbursements(db).GenerateAsync(contract.Id))
+            .OrderBy(x => x.RoundNumber).ToList();
+
+        Assert.Equal(new[] { 30m, 30m, 30m, 10m }, result.Select(r => r.Percentage).ToArray());
+        Assert.Equal(contract.TotalAmount, result.Sum(r => r.PlannedAmount));
+    }
+
+    /// <summary>
+    /// Loại CƠ BẢN chưa cấu hình mốc thì một đợt 100% sau nghiệm thu (QĐ543 Điều 16.2).
     /// </summary>
     [Fact]
     public async Task Generate_NoTemplate_FallsBackToSingleTranche()
