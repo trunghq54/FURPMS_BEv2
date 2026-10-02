@@ -138,9 +138,13 @@ public class ReviewScoringServiceMinutesTests
         db.CouncilProjectAssignments.Add(new CouncilProjectAssignment { CouncilId = council.Id, ProjectId = project.Id });
         var chairMember = new CouncilMember { Id = Guid.NewGuid(), CouncilId = council.Id, UserId = chair.Id, MemberRole = "Chair", Status = "CONFIRMED" };
         var secMember = new CouncilMember { Id = Guid.NewGuid(), CouncilId = council.Id, UserId = secretary.Id, MemberRole = "Secretary", Status = "CONFIRMED" };
-        db.CouncilMembers.AddRange(chairMember, secMember);
+        // QĐ543 Điều 12.3.b: hội đồng nghiệm thu phải có phản biện, và phản biện nộp phiếu BM10.
+        var opponent = MakeUser("Opponent");
+        db.Users.Add(opponent);
+        var oppMember = new CouncilMember { Id = Guid.NewGuid(), CouncilId = council.Id, UserId = opponent.Id, MemberRole = "Opponent", Status = "CONFIRMED" };
+        db.CouncilMembers.AddRange(chairMember, secMember, oppMember);
         // QĐ543 Điều 8.3.b: phải có ít nhất 2/3 thành viên dự họp và người dự phải chấm.
-        SeedBallots(db, council.Id, project.Id, chairMember, secMember);
+        SeedBallots(db, council.Id, project.Id, chairMember, secMember, oppMember);
         await db.SaveChangesAsync();
 
         var service = MakeService(db);

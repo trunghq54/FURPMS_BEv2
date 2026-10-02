@@ -13,4 +13,11 @@ public class CouncilMemberResponse
     public DateTime? InvitationSentAt { get; set; }
     public DateTime? ConfirmedAt { get; set; }
     public DateTime? DeclinedAt { get; set; }
+    /// <summary>
+    /// Lý do thành viên từ chối lời mời. Trước 03/10 có lưu trong DB nhưng API không trả ra — người
+    /// được mời gõ lý do mà Phòng QLKH không bao giờ đọc được.
+    /// </summary>
+    public string? DeclineReason { get; set; }
+    /// <summary>Lý do mời dù khác lĩnh vực — null nếu đúng lĩnh vực.</summary>
+    public string? ExpertiseNote { get; set; }
 }

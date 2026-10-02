@@ -680,7 +680,9 @@ public class ReviewScoringService : IReviewScoringService
         {
             _decisions.Log(
                 decision.ProjectId, DecisionTypes.RoundResult,
-                $"{RoundTypeVi(round.RoundType)} — vòng {round.RoundNumber}: " +
+                // Không ghi "vòng N": số đó đếm chung cả lĩnh vực, đọc trong hồ sơ một đề tài dễ hiểu
+                // nhầm là đề tài đã qua N vòng (03/10).
+                $"{RoundTypeVi(round.RoundType)}: " +
                     (projectRound.Status == "PASSED" ? "Đạt" : "Không đạt"),
                 "ProjectRound", projectRound.Id.ToString(),
                 result: projectRound.Status, decidedByRole: "Hội đồng",
@@ -691,8 +693,7 @@ public class ReviewScoringService : IReviewScoringService
 
         // Biên bản khoá = kết quả CHÍNH THỨC (rule #12). Hai nhóm cần biết ngay:
         //  · thành viên hội đồng — để thôi chờ, và biết bản mình góp ý đã chốt;
-        //  · chủ nhiệm — nhưng CHỈ ở vòng nghiệm thu. Vòng xét duyệt đã có
-        //    `REVIEW_ROUND_CLOSED` bắn lúc đóng vòng; báo cả hai chỗ là chủ nhiệm nhận trùng.
+        //  · chủ nhiệm — ở CẢ HAI loại phiên (xem nhánh else bên dưới).
         var resultText = decision.Result switch
         {
             ReviewResult.Approved => isAcceptance ? "ĐẠT" : "ĐƯỢC DUYỆT",
@@ -727,6 +728,23 @@ public class ReviewScoringService : IReviewScoringService
                 entityType: "ReviewCouncil",
                 entityId: council.Id.ToString(),
                 priority: "HIGH");
+        }
+        else if (proposal != null)
+        {
+            // 03/10: trước đây phiên XÉT DUYỆT không báo chủ nhiệm ở bước này (ghi chú cũ nói đã có
+            // REVIEW_ROUND_CLOSED — nhưng thông báo đó chỉ bắn khi Staff đóng vòng thủ công, luồng
+            // biên bản thường không đi qua). Bị "cần chỉnh sửa" mà PI không được báo thì không ai sửa.
+            var needsRevision = decision.Result == ReviewResult.RevisionRequired;
+            await _notifier.NotifyAsync(
+                proposal.Project.PiUserId,
+                "REVIEW_MINUTES_FINALIZED",
+                needsRevision ? "Hội đồng yêu cầu hoàn thiện đề cương" : "Kết quả xét duyệt đề cương",
+                $"Hội đồng xét duyệt đã kết luận đề cương \"{projectTitle}\": {resultText}." +
+                    (needsRevision ? " Xem góp ý và kiến nghị của hội đồng ở trang đề cương để chỉnh sửa." : " Xem biên bản ở trang đề cương."),
+                actionUrl: $"/my-proposals/{proposal.Id}",
+                entityType: "ReviewCouncil",
+                entityId: council.Id.ToString(),
+                priority: decision.Result == ReviewResult.Approved ? "NORMAL" : "HIGH");
         }
 
         return await WithScoreContextAsync(MapDecision(decision), decision);
@@ -872,10 +890,18 @@ public class ReviewScoringService : IReviewScoringService
                 .Where(m => RoleIs(m.MemberRole, CouncilMemberRole.Opponent))
                 .Select(m => m.Id)
                 .ToHashSet();
-            if (opponentIds.Count > 0 && !submitted.Any(opponentIds.Contains))
+            // 03/10: trước đây hội đồng KHÔNG có phản biện thì bỏ qua kiểm tra, và phiếu Đạt/Không đạt
+            // của phản biện cũng được tính là "đã cho ý kiến". Điều 12.3.b đòi phản biện dự họp VÀ
+            // nhận xét bằng văn bản (Biểu mẫu 10) — trên hệ thống là phiếu BM10 (review_scores).
+            if (opponentIds.Count == 0)
                 throw new InvalidOperationException(
-                    $"Hội đồng nghiệm thu phải có thành viên phản biện dự họp và cho ý kiến " +
-                    $"(QĐ543 Điều 12.3.b) — chưa có phiếu nào của phản biện, không thể {action}.");
+                    "Hội đồng nghiệm thu chưa có thành viên phản biện (QĐ543 Điều 12.3.b) — " +
+                    $"thêm phản biện cho hội đồng rồi mới {action}.");
+            var missingBm10 = opponentIds.Where(id => !scoreBallots.Contains(id)).ToList();
+            if (missingBm10.Count > 0)
+                throw new InvalidOperationException(
+                    "Thành viên phản biện chưa nộp phiếu nhận xét (Biểu mẫu 10) — QĐ543 Điều 12.3.b yêu cầu " +
+                    $"phản biện nhận xét bằng văn bản, không thể {action}.");
         }
     }
 
@@ -901,6 +927,14 @@ public class ReviewScoringService : IReviewScoringService
         var evals = await _review.AcceptanceEvaluations
             .Where(e => e.CouncilId == councilId && e.ProjectId == projectId && e.SubmittedAt != null)
             .ToListAsync();
+        // Nghiệm thu: PHIẾU BẦU là Đạt/Không đạt (BM11). Phiếu BM10 trong review_scores là NHẬN XÉT
+        // của phản biện (bắt buộc từ 03/10), không phải phiếu bầu — không đếm vào 10.1, không tính TB.
+        if (await IsAcceptanceCouncilAsync(council))
+        {
+            var valid = evals.Count(e => e.IsValidBallot);
+            return (council.Members.Count, evals.Count, valid, evals.Count - valid, null);
+        }
+
         var scoredMemberIds = scores.Select(s => s.EvaluatorMemberId).ToHashSet();
         var extraEvals = evals.Where(e => !scoredMemberIds.Contains(e.EvaluatorMemberId)).ToList();
 
@@ -953,6 +987,53 @@ public class ReviewScoringService : IReviewScoringService
         return decision == null
             ? null
             : await WithScoreContextAsync(MapDecision(decision), decision);
+    }
+
+    public async Task<List<ProjectMinutesDto>> GetProjectMinutesAsync(Guid projectId, Guid userId, IEnumerable<string> roles)
+    {
+        var roleSet = roles.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var isStaff = roleSet.Contains("Admin") || roleSet.Contains("Staff");
+        var isPi = await _proposals.Query().IgnoreQueryFilters()
+            .AnyAsync(p => p.ProjectId == projectId && p.Project.PiUserId == userId);
+
+        var decisions = await _review.Decisions
+            .Include(d => d.QaEntries)
+            .Include(d => d.MemberOpinions)
+            .Include(d => d.Council).ThenInclude(c => c.Round)
+            .Include(d => d.Council).ThenInclude(c => c.Members)
+            .Where(d => d.ProjectId == projectId && d.FinalizedAt != null)
+            .OrderBy(d => d.FinalizedAt)
+            .ToListAsync();
+
+        var result = new List<ProjectMinutesDto>();
+        foreach (var d in decisions)
+        {
+            var isMember = d.Council.Members.Any(m => m.UserId == userId);
+            if (!isStaff && !isPi && !isMember) continue;
+            var dto = await WithScoreContextAsync(MapDecision(d), d);
+            result.Add(new ProjectMinutesDto
+            {
+                Id = dto.Id, CouncilId = dto.CouncilId, ProjectId = d.ProjectId, RoundType = d.Council.Round?.RoundType,
+                TotalMembers = dto.TotalMembers, AttendingMembers = dto.AttendingMembers,
+                ValidBallots = dto.ValidBallots, InvalidBallots = dto.InvalidBallots, AverageScore = dto.AverageScore,
+                Result = dto.Result, CouncilComments = dto.CouncilComments, Recommendations = dto.Recommendations,
+                FinalizedAt = dto.FinalizedAt, RubricTotal = dto.RubricTotal, PassThresholdPct = dto.PassThresholdPct,
+                ResultDivergesFromScore = dto.ResultDivergesFromScore, ResultJustification = dto.ResultJustification,
+                QaEntries = dto.QaEntries, MemberOpinions = dto.MemberOpinions
+            });
+        }
+        if (result.Count == 0 && !isStaff && !isPi && decisions.Count > 0)
+            throw new ForbiddenException("Bạn không có quyền xem biên bản của đề tài này.");
+        return result;
+    }
+
+    public async Task<bool> CanReadMinutesAsync(Guid councilId, Guid projectId, Guid userId, IEnumerable<string> roles)
+    {
+        var roleSet = roles.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (roleSet.Contains("Admin") || roleSet.Contains("Staff")) return true;
+        if (await _review.CouncilMembers.AnyAsync(m => m.CouncilId == councilId && m.UserId == userId)) return true;
+        return await _proposals.Query().IgnoreQueryFilters()
+            .AnyAsync(p => p.ProjectId == projectId && p.Project.PiUserId == userId);
     }
 
     // ── Mappers ───────────────────────────────────────────────────────────────

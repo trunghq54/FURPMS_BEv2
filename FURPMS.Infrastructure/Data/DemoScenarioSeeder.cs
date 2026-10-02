@@ -1260,9 +1260,12 @@ public class DemoScenarioSeeder
         _db.ReviewCouncils.Add(council);
         await _db.SaveChangesAsync();
 
+        // Phản biện chỉ có ở hội đồng NGHIỆM THU (QĐ543 Điều 12.3.b); xét duyệt thì toàn thành viên.
+        var isAcceptance = string.Equals(round.RoundType, "ACCEPTANCE", StringComparison.OrdinalIgnoreCase);
         var roles = new[]
         {
-            CouncilMemberRole.Chair, CouncilMemberRole.Secretary, CouncilMemberRole.Opponent,
+            CouncilMemberRole.Chair, CouncilMemberRole.Secretary,
+            isAcceptance ? CouncilMemberRole.Opponent : CouncilMemberRole.Member,
             CouncilMemberRole.Member, CouncilMemberRole.Member
         };
         var members = new List<CouncilMember>();

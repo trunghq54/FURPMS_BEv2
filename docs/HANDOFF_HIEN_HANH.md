@@ -217,6 +217,125 @@ Thầy góp ý: cán bộ phòng không có chuyên môn để cho Đạt/Không
   đã có kết luận; `StatusBadge` tô màu PASS/CONDITIONAL/FAIL.
 - **Số 0 đứng đầu** ("05"): sửa chung trong `components/ui/input.tsx` — xem chi tiết dưới.
 
+### 1.4n Biên bản hội đồng: xuất BM04/BM12 + PI và Staff xem trên trang đề tài (03/10)
+
+- **Xuất Word:** `DocumentExportService.ExportMinutesDocAsync(councilId, projectId)`, theo loại phiên.
+  - **BM04 (xét duyệt):** thông tin chung, bảng thành viên, ý kiến chuyên môn/kinh phí, tổng điểm/phiếu/điểm TB,
+    kết luận + kiến nghị.
+  - **BM12 (nghiệm thu):** QĐ thành lập, vắng mặt theo điểm danh, ý kiến phản biện, phiếu Đạt/Không đạt,
+    kiến nghị.
+  - Chỉ xuất bản ĐÃ KHOÁ.
+  - API `GET /api/review-scoring/councils/{id}/minutes/export-word?projectId=`; ai được tải do
+    `CanReadMinutesAsync` quyết.
+- **Xem biên bản:** `GET /api/review-scoring/projects/{projectId}/minutes`.
+  - Được xem: Staff/Admin, PI của đề tài, thành viên hội đồng đó.
+  - FE `CouncilMinutesCard` hiện ở trang đề cương của PI và tab "Biên bản hội đồng" trong trang đề tài của Staff.
+  - Nút tải Word cũng có trong `MinutesPanel` khi biên bản đã khoá.
+- **Thông báo:** trước đây khoá biên bản phiên XÉT DUYỆT không báo PI. `REVIEW_ROUND_CLOSED` chỉ bắn khi Staff đóng
+  vòng thủ công, luồng biên bản thường không đi qua. Nay có `REVIEW_MINUTES_FINALIZED`, mức HIGH nếu cần
+  hoàn thiện / không duyệt.
+- **File không được trống khi Thư ký ghi sơ sài (lần 2):**
+  - "Ý kiến thành viên" trống thì dựng từ phiếu chấm; kiến nghị trống thì lấy kiến nghị trong phiếu.
+  - Luôn có PHỤ LỤC tổng hợp phiếu: tiêu chí / tối đa / điểm / nhận xét của từng người.
+  - `Clean()` bỏ chuỗi là khoá dịch, vd `review.quickFillCriterionNote` do nút "Điền nhanh" lưu nguyên khoá
+    trước khi sửa i18n.
+  - `MinutesPanel` tự điền sẵn ý kiến từ phiếu cho biên bản mới.
+  - Dữ liệu rác trên DB deploy (nếu có) sửa bằng 2 lệnh UPDATE thay khoá bằng câu tiếng Việt tương ứng.
+- **Trình bày (lần 3):**
+  - Bảng biên bản dùng `MinutesTable`/`MinutesRow`: độ rộng cố định ~9356 twip, tiêu đề in đậm căn giữa có nền,
+    lặp tiêu đề khi sang trang, cột số căn giữa, mỗi dòng là một đoạn, cỡ 12.
+  - Danh sách thành viên chỉ gồm người CONFIRMED; tổng số đếm từ danh sách đó.
+  - Mục 2 có bảng điểm từng thành viên.
+  - Cột "Về chuyên môn" chỉ ghi nhận xét chung; chi tiết từng tiêu chí ở phụ lục.
+  - Ngày đầu biên bản là ngày họp.
+- **BM12 (lần 4):** hội đồng nghiệm thu chấm bằng `AcceptanceEvaluations` (Đạt/Không đạt + lý do), không dùng phiếu
+  điểm ⇒ thêm:
+  - Bảng thành viên (mục 6).
+  - Bảng sản phẩm + kết quả nghiệm thu (mục 8, từ `ProjectDeliverables`).
+  - Bảng phiếu từng người (mục 10.1).
+  - Lý do phiếu Không đạt làm ý kiến khi Thư ký không ghi.
+  - Mọi bảng có `TableGap` phía sau và hàng tiêu đề `KeepNext`.
+- **Số/ngày Quyết định thành lập hội đồng:** BE nhận từ lâu (`PUT /api/councils/{id}`) nhưng không màn nào cho
+  nhập. Nay có `CouncilDecisionNoForm` ở đầu chi tiết hội đồng.
+  - Lần 5: nhập được ngay khi tạo hội đồng, qua `CreateCouncilPackageRequest.EstablishmentDecisionNo`/`EstablishedAt`
+    và 2 ô trong `CreateCouncilSheet`.
+- **Phản biện trong BM12 (lần 5, theo QĐ543 Điều 12.3.b + Biểu mẫu 10):**
+  - Mục 9.1/9.2 in phiếu nhận xét BM10 của từng phản biện: mức 1–5 từng nội dung kèm chữ (Yếu…Xuất sắc), nhận xét
+    khác, đánh giá chung.
+  - Phụ lục đổi thành "NHẬN XÉT CỦA PHẢN BIỆN", cột "Mức (1–5)".
+  - Phiếu BM10 được lưu ở `proposal_review_scores` (rubric nghiệm thu id 1, 4 tiêu chí × 25). `Rating()` quy về
+    thang 1–5.
+  - **Luật mới:**
+    - Hội đồng NGHIỆM THU phải có ≥1 Phản biện: `ReviewBoardService` chặn từ lúc tạo, FE mặc định 5 dòng
+      CT/TK/PB/UV/UV.
+    - `AssertQuorumAsync` không cho khoá biên bản khi phản biện chưa nộp BM10.
+    - `ComputeTallyAsync` của nghiệm thu chỉ đếm phiếu BM11 (`AcceptanceEvaluations`), điểm TB = null.
+  - Ảnh minh hoạ: `anh_giao_dien_moi/48_bm12_co_phan_bien_trang1-3.png`, `49_tao_hoi_dong_nghiem_thu.png`.
+- **Giữ "Cần chỉnh sửa":** QĐ543 Điều 9.1 nói Hiệu trưởng phê duyệt dựa trên kết quả hội đồng "và các Hồ sơ đã
+  được hoàn thiện". BM04 in kết luận này là "Đề nghị phê duyệt sau khi chủ nhiệm hoàn thiện đề cương".
+
+### 1.4m Phản biện chỉ ở hội đồng nghiệm thu · lý do mời khác lĩnh vực được LƯU (03/10) — có migration
+
+- **Vai Phản biện:**
+  - QĐ543 Điều 8.2: hội đồng xét duyệt gồm Chủ tịch/Thư ký/thành viên. Điều 12.3.b: phản biện (BM10) chỉ ở
+    hội đồng nghiệm thu.
+  - `ReviewShared.AssertRoleFitsRound` chặn `Opponent` ở phiên không phải `ACCEPTANCE`, áp ở 4 đường: tạo trọn
+    gói, thêm 1 người, đổi vai, thêm theo vòng.
+  - FE `councilRolesFor(roundType)` chỉ hiện Phản biện ở phiên nghiệm thu. Sao chép hội đồng sang phiên xét
+    duyệt thì Phản biện chuyển thành Thành viên.
+  - Seeder demo không còn tạo phản biện cho hội đồng xét duyệt.
+  - Dữ liệu cũ KHÔNG tự sửa.
+- **Lý do mời người khác lĩnh vực:**
+  - Trước đây form tạo hội đồng (hội đồng chưa có đề tài) làm BE bỏ qua kiểm tra ⇒ lý do bị bỏ, lúc gán đề tài
+    lại bắt gõ lần hai.
+  - Nay `AssertExpertiseAsync` so với lĩnh vực của PHIÊN khi chưa có đề tài và lưu lý do vào
+    `CouncilMember.ExpertiseNote` (migration `AddCouncilMemberExpertiseNote`, tự chạy khi khởi động).
+  - Gán đề tài thì dùng lại lý do đã lưu để ghi `EXPERTISE_OVERRIDE` vào hồ sơ quyết định của đề tài; PI cũng
+    xem được qua "Tiến trình đề tài".
+  - Danh sách thành viên hội đồng hiện "Mời ngoài lĩnh vực — lý do: …".
+- Bộ chọn người tự cuộn vào tầm nhìn khi mở ở thẻ gần đáy form.
+
+### 1.4l Tạo hội đồng / tạo hợp đồng gọn hơn, giữ hợp đồng đang mở khi tải lại (03/10, lần 2)
+
+- **Tạo hội đồng:**
+  - Mỗi thành viên là một thẻ (vai trò · tên · đơn vị/lĩnh vực · nhãn).
+  - Bộ chọn người mở NGAY dưới thẻ, trong form: chế độ `compact` của `CouncilCandidatePicker`, cao `max-h-64`,
+    tự cuộn. Ô nổi (`Popover`) cũ nằm ngoài khung form nên con lăn chuột bị khoá cuộn chặn.
+  - Cảnh báo khác lĩnh vực thu còn một dòng + ô lý do (vẫn bắt buộc); lời giải thích mở bằng "Vì sao?".
+- **`FormSheet`:** lớp trong của Radix ScrollArea là `display:table` nên chữ dài đẩy rộng form (thẻ tràn ngang, mất
+  nút X). Đã ép về `block` cho MỌI form dạng sheet.
+- **Tạo hợp đồng:**
+  - `ApprovedProposalPicker` (thẻ + ô tìm) thay dropdown bị tràn vì tên đề tài dài.
+  - Ngày kết thúc tự tính = ngày bắt đầu + `durationMonths` PI đăng ký; Staff sửa tay thì không ghi đè.
+- **Màn Hợp đồng:** hợp đồng đang mở và tab nằm trên URL (`?contract=…&tab=…`, `replace`), tải lại vẫn ở đúng chỗ.
+
+### 1.4k Góp ý test deploy 03/10: tạo hội đồng, AI điền thành viên, từ chối lời mời, AI chấm, biên bản
+
+- **Tạo hội đồng** (`CreateCouncilSheet`): mỗi dòng có vai trò rồi đến nút "Bấm để chọn người". Nút mở `Popover`
+  chứa `CouncilCandidatePicker` (ô tìm + thẻ). Người đã chọn ở dòng khác không hiện lại. Sheet rộng 640
+  (`FormSheet.width`).
+- **AI điền thành viên lúc nộp đề cương:**
+  - BE trích xuất đúng.
+  - FE trước đây bỏ qua CẢ danh sách nếu đã có ai (vd bấm "Điền dữ liệu mẫu"). Nay chỉ thêm người còn thiếu
+    (so theo tên).
+  - Email thành viên không bắt buộc nữa (BE vốn không cần; thuyết minh thường không ghi email).
+- **Từ chối lời mời hội đồng:**
+  - `CouncilMemberResponse.DeclineReason` nay được trả ra; trước đây có lưu nhưng không trả.
+  - `RespondToMembershipAsync` báo cả phòng Staff (`COUNCIL_INVITATION_DECLINED`, HIGH).
+  - Danh sách thành viên hiện vai trò tiếng Việt và lý do từ chối.
+- **AI hỗ trợ chấm:**
+  - Thẻ tự chạy BÙ phần còn thiếu. Trước đây đã có tóm tắt là không chạy gì, nên không bao giờ tự có gợi ý điểm.
+  - Có hai nút "Tóm tắt lại" / "Gợi ý điểm lại".
+  - Điểm gợi ý làm tròn theo `SCORE_DECIMAL_PLACES` ở cả BE (prompt + `Math.Round`) lẫn FE.
+  - Thêm nút "Áp dụng tất cả gợi ý".
+  - Khoá i18n `review.quickFill*` trước nằm nhầm namespace.
+- **Biên bản:**
+  - Bỏ mục "Nhận xét của thành viên" (đọc `ReviewerFeedback`, không màn nào cho nhập nên luôn trống).
+  - Dưới điểm từng người hiện thêm nhận xét theo tiêu chí và kiến nghị.
+  - Nút "Điền từ phiếu chấm" đổ vào "Ý kiến thành viên hội đồng" (BM04 II.1): tiêu chí kinh phí vào cột kinh phí,
+    còn lại vào cột chuyên môn; kiến nghị vào ô Kiến nghị nếu ô đó còn trống.
+- Bỏ "vòng N" khỏi biểu đồ dashboard (`AnalyticsController`) và dòng tóm tắt kết quả trong sổ quyết định.
+
 ### 1.4j 🔴 Deploy: đề tài Ứng dụng chỉ ra 1 đợt giải ngân + 1 kỳ báo cáo (01/10)
 
 - **Giải ngân:** mốc (`disbursement_templates`) chỉ được seed cho loại có mã đúng `APPLIED`/`BASIC`, mà hai loại này

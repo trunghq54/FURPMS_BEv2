@@ -7,6 +7,9 @@ public class CreateCouncilPackageRequest
     public string? CouncilType { get; set; }
     public List<Guid> ProjectIds { get; set; } = new();
     public List<CouncilPackageMemberRequest> Members { get; set; } = new();
+    /// <summary>Số Quyết định thành lập hội đồng (in vào BM04/BM12). Có thể nhập sau.</summary>
+    public string? EstablishmentDecisionNo { get; set; }
+    public DateOnly? EstablishedAt { get; set; }
 }
 
 public class CouncilPackageMemberRequest

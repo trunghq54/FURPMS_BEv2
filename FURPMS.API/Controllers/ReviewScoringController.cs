@@ -105,6 +105,29 @@ public class ReviewScoringController : ControllerBase
         return Ok(ApiResponse<CouncilDecisionDto>.Ok(result));
     }
 
+    // GET /api/review-scoring/projects/{projectId}/minutes — biên bản ĐÃ KHOÁ của một đề tài (03/10)
+    [HttpGet("projects/{projectId:guid}/minutes")]
+    public async Task<IActionResult> GetProjectMinutes(Guid projectId)
+    {
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var roles = User.FindAll(ClaimTypes.Role).Select(c => c.Value).ToList();
+        var result = await _scoring.GetProjectMinutesAsync(projectId, userId, roles);
+        return Ok(ApiResponse<List<ProjectMinutesDto>>.Ok(result));
+    }
+
+    // GET /api/review-scoring/councils/{councilId}/minutes/export-word?projectId= — BM04/BM12 (03/10)
+    [HttpGet("councils/{councilId:guid}/minutes/export-word")]
+    public async Task<IActionResult> ExportMinutes(
+        Guid councilId, [FromQuery] Guid projectId, [FromServices] IDocumentExportService export)
+    {
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var roles = User.FindAll(ClaimTypes.Role).Select(c => c.Value).ToList();
+        if (!await _scoring.CanReadMinutesAsync(councilId, projectId, userId, roles))
+            throw new ForbiddenException("Bạn không có quyền tải biên bản này.");
+        var (content, fileName) = await export.ExportMinutesDocAsync(councilId, projectId);
+        return File(content, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", fileName);
+    }
+
     // POST /api/review-scoring/councils/{councilId}/minutes/approve — Chủ tịch duyệt = khoá
     [HttpPost("councils/{councilId:guid}/minutes/approve")]
     public async Task<IActionResult> ApproveMinutes(Guid councilId, [FromQuery] Guid? projectId)

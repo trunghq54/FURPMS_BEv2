@@ -1,3 +1,4 @@
+using FURPMS.Application.Constants;
 using System.Text.Json;
 using FURPMS.Application.DTOs.AI;
 using FURPMS.Application.Common;
@@ -160,6 +161,18 @@ Tổng kinh phí: {p.TotalBudget:#,##0} VND");
         var criteriaText = string.Join("\n",
             criteria.Select(c => $"- id={c.Id} | {c.CriterionName} | điểm tối đa {c.MaxScore}"));
 
+        // Cùng cấu hình số chữ số thập phân mà ReviewScoringService dùng để CHẶN phiếu nộp. Trước
+        // 03/10 AI gợi ý 7.5 trong khi hệ thống chấm số nguyên ⇒ người chấm bấm "Áp dụng" rồi nộp
+        // bị lỗi, phải tự sửa lại từng ô.
+        var decimalsRaw = await _db.SystemSettings
+            .Where(s => s.Key == SystemSettingKeys.ScoreDecimalPlaces)
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync();
+        var decimals = int.TryParse(decimalsRaw, out var d) ? Math.Clamp(d, 0, 2) : SystemSettingKeys.DefaultScoreDecimalPlaces;
+        var scoreFormatRule = decimals == 0
+            ? "- Điểm là SỐ NGUYÊN (không có phần thập phân)."
+            : $"- Điểm có tối đa {decimals} chữ số thập phân.";
+
         /*
          * Gợi ý chấm cũng phải đọc FILE đề cương như tóm tắt (B1/B5 — thầy 05/08:
          * *"gợi ý chấm điểm phải đảm bảo AI chấm đúng dựa trên tiêu chí"*).
@@ -178,6 +191,7 @@ Trả về DUY NHẤT một mảng JSON, không markdown, dạng:
 
 Quy tắc chấm:
 - Điểm mỗi tiêu chí phải nằm trong [0, điểm tối đa của chính tiêu chí đó].
+{scoreFormatRule}
 - Phải chấm ĐỦ {criteria.Count} tiêu chí, không bỏ sót, không tự thêm tiêu chí ngoài danh sách.
 - Tổng thang điểm của bộ này là {criteria.Sum(c => c.MaxScore):0.##}.
 - Lý do phải nói về ĐÚNG khía cạnh của tiêu chí, không nhận xét chung chung về cả đề tài.
@@ -210,7 +224,9 @@ Thời gian: {proposal.DurationMonths} tháng";
                 CriterionId = c.Id,
                 CriterionName = c.CriterionName,
                 MaxScore = c.MaxScore,
-                SuggestedScore = hit == null ? 0m : Math.Clamp(hit.SuggestedScore, 0m, c.MaxScore),
+                SuggestedScore = hit == null
+                    ? 0m
+                    : Math.Round(Math.Clamp(hit.SuggestedScore, 0m, c.MaxScore), decimals, MidpointRounding.AwayFromZero),
                 Comment = hit?.Comment ?? "AI chưa đưa ra nhận định cho tiêu chí này."
             };
         }).ToList();

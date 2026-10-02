@@ -261,7 +261,11 @@ public class AnalyticsController : ControllerBase
             {
                 // Trước đây ghép mã thô: "SCIENCE REVIEW #1". Phương diện SCIENCE đã bỏ (rule #16)
                 // nên không còn gì để phân biệt; chỉ cần loại vòng + số vòng bằng tiếng Việt.
-                label = (r.RoundType == "ACCEPTANCE" ? "Nghiệm thu" : "Xét duyệt") + " — vòng " + r.RoundNumber,
+                // 03/10: "vòng N" đếm chung mọi loại ⇒ ra "Nghiệm thu — vòng 2" cho phiên nghiệm thu
+                // ĐẦU TIÊN. Nay đánh số phiên trong CÙNG loại (ReviewRoundNaming).
+                label = (r.RoundType == "ACCEPTANCE" ? "Nghiệm thu" : "Xét duyệt") + " · phiên " +
+                    _db.ReviewRounds.Count(x => x.CycleTrackId == r.CycleTrackId
+                        && x.RoundType == r.RoundType && x.RoundNumber <= r.RoundNumber),
                 completed = r.ProjectRounds.Count(pr => pr.Status == "PASSED" || pr.Status == "FAILED"),
                 pending = r.ProjectRounds.Count(pr => pr.Status != "PASSED" && pr.Status != "FAILED"),
             })

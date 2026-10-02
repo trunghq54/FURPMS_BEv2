@@ -274,7 +274,7 @@ public class ProjectDecisionService : IProjectDecisionService
         {
             into.Add(Row(
                 r.ProjectId, DecisionTypes.RoundResult,
-                $"{RoundTypeVi(r.RoundType)} — vòng {r.RoundNumber}: {(r.Status == "PASSED" ? "Đạt" : "Không đạt")}",
+                $"{RoundTypeVi(r.RoundType)}: {(r.Status == "PASSED" ? "Đạt" : "Không đạt")}",
                 "ProjectRound", r.Id.ToString(), r.FinalizedAt!.Value,
                 result: r.Status, decidedByRole: "Hội đồng"));
         }

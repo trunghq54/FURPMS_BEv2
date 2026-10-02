@@ -32,12 +32,15 @@ public class DocumentExportService : IDocumentExportService
     private readonly IProposalRepository _proposals;
     private readonly IMasterDataRepository _masterData;
     private readonly IContractRepository _contracts;
+    private readonly IReviewRepository _review;
 
     public DocumentExportService(
         IProposalRepository proposals,
         IMasterDataRepository masterData,
-        IContractRepository contracts)
+        IContractRepository contracts,
+        IReviewRepository review)
     {
+        _review = review;
         _proposals = proposals;
         _masterData = masterData;
         _contracts = contracts;
@@ -1082,6 +1085,531 @@ AppendParagraph(body,
         return (ms.ToArray(), $"PhuLucHopDong_{contractCode}_{a.RequestedAt:yyyyMMdd}.docx");
     }
 
+    // ── Biên bản họp hội đồng: BM04 (xét duyệt) / BM12 (nghiệm thu) — 03/10 ─────────────────
+    //
+    // QĐ543 Điều 8.3.c / 12.3.c: Thư ký ghi biên bản, các thành viên thông qua, Chủ tịch + Thư ký
+    // ký. Hệ thống đã có đủ dữ liệu (biên bản đã khoá, phiếu, điểm danh) nhưng trước 03/10 không
+    // xuất ra được — Phòng QLKH phải chép tay sang Word để đem ký và lưu hồ sơ giấy.
+
+    private static string CouncilRoleVi(string? role) => role switch
+    {
+        "Chair" => "Chủ tịch",
+        "Secretary" => "Thư ký",
+        "Opponent" => "Phản biện",
+        _ => "Ủy viên"
+    };
+
+    public async Task<(byte[] Content, string FileName)> ExportMinutesDocAsync(Guid councilId, Guid? projectId)
+    {
+        var decision = await _review.Decisions
+            .IgnoreQueryFilters()
+            .Include(d => d.MemberOpinions)
+            .Include(d => d.QaEntries)
+            .Include(d => d.ChairUser)
+            .Include(d => d.SecretaryUser)
+            .Where(d => d.CouncilId == councilId && (projectId == null || d.ProjectId == projectId))
+            .OrderByDescending(d => d.FinalizedAt)
+            .FirstOrDefaultAsync()
+            ?? throw new KeyNotFoundException("Hội đồng chưa có biên bản cho đề tài này.");
+
+        // Bản nháp mà in ra đem ký là giấy tờ chưa được thông qua.
+        if (decision.FinalizedAt == null)
+            throw new InvalidOperationException("Biên bản chưa được Chủ tịch duyệt và khoá — chỉ xuất được bản đã khoá.");
+
+        var council = await _review.Query()
+            .IgnoreQueryFilters()
+            .Include(c => c.Members).ThenInclude(m => m.User).ThenInclude(u => u.Unit)
+            .Include(c => c.Round)
+            .FirstOrDefaultAsync(c => c.Id == councilId)
+            ?? throw new KeyNotFoundException("Không tìm thấy hội đồng.");
+        var isAcceptance = string.Equals(council.Round?.RoundType, "ACCEPTANCE", StringComparison.OrdinalIgnoreCase);
+
+        // Phiếu chấm đã nộp, kèm từng tiêu chí (03/10, lần 2): biên bản Thư ký ghi sơ sài thì file vẫn
+        // phải đủ thông tin đang có trong hệ thống — ý kiến lấy từ phiếu, và cả bảng phụ lục chi tiết.
+        var ballots = (await _review.ReviewScores
+                .IgnoreQueryFilters()
+                .Where(sc => sc.CouncilId == councilId && sc.ProjectId == decision.ProjectId && sc.SubmittedAt != null)
+                .Select(sc => new
+                {
+                    Name = sc.EvaluatorMember.User.FullName,
+                    Role = sc.EvaluatorMember.MemberRole,
+                    sc.IsValidBallot,
+                    sc.GeneralComments,
+                    sc.OtherRecommendations,
+                    Details = sc.ScoreDetails
+                        .OrderBy(d => d.Criterion.Sequence)
+                        .Select(d => new { d.Criterion.CriterionName, d.Criterion.MaxScore, d.GivenScore, d.Comments })
+                        .ToList()
+                })
+                .ToListAsync())
+            .OrderBy(b => b.Role switch { "Chair" => 0, "Secretary" => 1, "Opponent" => 2, _ => 3 })
+            .ToList();
+        // Thành viên CHÍNH THỨC của hội đồng = đã xác nhận tham gia. Người còn chờ trả lời hay đã từ
+        // chối không thuộc biên bản (trước đây in cả 5 người trong khi "Tổng số: 3").
+        var rosterMembers = OrderedMembers(council.Members.Where(m => m.Status == "CONFIRMED")).ToList();
+        if (rosterMembers.Count == 0)
+            rosterMembers = OrderedMembers(council.Members.Where(m => m.Status != "DECLINED")).ToList();
+        static bool IsBudget(string name) =>
+            name.Contains("kinh phí", StringComparison.OrdinalIgnoreCase) || name.Contains("dự toán", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("tài chính", StringComparison.OrdinalIgnoreCase) || name.Contains("ngân sách", StringComparison.OrdinalIgnoreCase);
+        // Ý kiến từng thành viên: Thư ký đã ghi thì dùng bản của Thư ký; chưa ghi thì dựng từ phiếu chấm.
+        var opinionRows = decision.MemberOpinions.OrderBy(o => o.Order)
+            .Select(o => (Name: o.MemberName, Academic: Clean(o.AcademicComment) ?? "", Budget: Clean(o.BudgetComment) ?? ""))
+            .Where(o => o.Academic != "" || o.Budget != "")
+            .ToList();
+        var opinionsFromBallots = opinionRows.Count == 0;
+        if (opinionsFromBallots)
+            opinionRows = ballots.Select(b => (
+                    Name: b.Name,
+                    // Nhận xét CHUNG của người chấm; không có mới ghép nhận xét từng tiêu chí. Chi tiết
+                    // từng tiêu chí đã có ở Phụ lục — chép cả vào đây thì bảng dài lê thê, lặp lại.
+                    Academic: Clean(b.GeneralComments) ?? string.Join("\n",
+                        b.Details.Where(d => !IsBudget(d.CriterionName) && Clean(d.Comments) != null)
+                            .Select(d => $"{d.CriterionName}: {Clean(d.Comments)}")),
+                    Budget: string.Join("\n", b.Details.Where(d => IsBudget(d.CriterionName) && Clean(d.Comments) != null)
+                        .Select(d => Clean(d.Comments)!))))
+                .Where(o => o.Academic != "" || o.Budget != "")
+                .ToList();
+        var recommendations = Clean(decision.Recommendations) ?? (ballots.Any(b => Clean(b.OtherRecommendations) != null)
+            ? string.Join("\n", ballots.Where(b => Clean(b.OtherRecommendations) != null).Select(b => $"- {b.Name}: {Clean(b.OtherRecommendations)}"))
+            : null);
+
+        var project = await _proposals.Query()
+            .IgnoreQueryFilters()
+            .Where(p => p.ProjectId == decision.ProjectId && p.IsCurrent)
+            .Select(p => new { p.Project.TitleVi, p.Project.ProjectCode, p.Project.HostingUnitId, PiName = p.Project.PiUser.FullName })
+            .FirstOrDefaultAsync();
+        var hostingUnit = project == null
+            ? null
+            : await _masterData.OrganizationalUnits.Where(u => u.Id == project.HostingUnitId).Select(u => u.Name).FirstOrDefaultAsync();
+
+        var meeting = await _review.Meetings
+            .Where(m => m.CouncilId == councilId && m.Status != "CANCELLED")
+            .OrderByDescending(m => m.ScheduledAt)
+            .FirstOrDefaultAsync();
+        var absentNames = meeting == null
+            ? new List<string>()
+            : await _review.MeetingAttendances
+                .Where(a => a.MeetingId == meeting.Id && a.ActuallyAttended == false)
+                .Select(a => a.Member.User.FullName + " (" + a.Member.MemberRole + ")")
+                .ToListAsync();
+
+        const string Blank = "……………………………";
+        // Biên bản lập TẠI buổi họp ⇒ ngày ở đầu là ngày họp; chưa có buổi họp (hoặc dữ liệu họp sau
+        // ngày khoá) thì dùng ngày Chủ tịch khoá. Giờ Việt Nam.
+        var when = (meeting != null && meeting.ScheduledAt <= decision.FinalizedAt.Value
+            ? meeting.ScheduledAt : decision.FinalizedAt.Value).AddHours(7);
+        var year = (meeting?.ScheduledAt ?? decision.FinalizedAt.Value).AddHours(7).Year;
+        string MeetingTime() => meeting == null
+            ? Blank
+            : meeting.ScheduledAt.AddHours(7).ToString("HH'h'mm, 'ngày' dd 'tháng' MM 'năm' yyyy", Vi);
+        string MeetingPlace() => meeting == null
+            ? Blank
+            : !string.IsNullOrWhiteSpace(meeting.Location)
+                ? meeting.Location!
+                : string.IsNullOrWhiteSpace(meeting.MeetingLink) ? Blank : $"Họp trực tuyến — {meeting.MeetingLink}";
+        // Số quyết định có thể đã lưu kèm đuôi "/QĐ-ĐHFPT" — không ghép thêm lần nữa.
+        var rawNo = council.EstablishmentDecisionNo?.Trim();
+        var decisionNo = string.IsNullOrWhiteSpace(rawNo)
+            ? "……/QĐ-ĐHFPT"
+            : rawNo.Contains("QĐ", StringComparison.OrdinalIgnoreCase) ? rawNo : $"{rawNo}/QĐ-ĐHFPT";
+        var decisionDate = council.EstablishedAt.HasValue
+            ? council.EstablishedAt.Value.ToString("'ngày' dd 'tháng' MM 'năm' yyyy", Vi)
+            : "ngày … tháng … năm …";
+
+        var resultVi = decision.Result switch
+        {
+            ReviewResult.Approved => isAcceptance ? "ĐẠT" : "ĐỀ NGHỊ PHÊ DUYỆT đề cương",
+            ReviewResult.RevisionRequired => "ĐỀ NGHỊ PHÊ DUYỆT SAU KHI CHỦ NHIỆM HOÀN THIỆN đề cương theo góp ý của Hội đồng",
+            ReviewResult.Rejected => isAcceptance ? "KHÔNG ĐẠT" : "KHÔNG ĐỀ NGHỊ PHÊ DUYỆT",
+            _ => decision.Result
+        };
+
+        using var ms = new MemoryStream();
+        using (var docx = WordprocessingDocument.Create(ms, WordprocessingDocumentType.Document))
+        {
+            var mainPart = docx.AddMainDocumentPart();
+            mainPart.Document = new Document(new Body());
+            var body = mainPart.Document.Body!;
+
+            if (!isAcceptance)
+            {
+                // ── BIỂU MẪU 04 ──
+                AppendNationalHeading(body);
+                AppendParagraph(body, $"Hà Nội, ngày {when:dd} tháng {when:MM} năm {when:yyyy}", justify: JustificationValues.Right);
+                AppendParagraph(body, "");
+                AppendHeading(body, "BIÊN BẢN HỌP HỘI ĐỒNG XÉT DUYỆT ĐỀ CƯƠNG", 14, bold: true, justify: JustificationValues.Center);
+                AppendHeading(body, $"ĐỀ TÀI NGHIÊN CỨU KHOA HỌC NĂM {year}", 13, bold: true, justify: JustificationValues.Center);
+                AppendParagraph(body, "");
+
+                AppendHeading(body, "I. Những thông tin chung", 13);
+                AppendParagraph(body, $"1. Tên đề tài: {project?.TitleVi ?? Blank}");
+                AppendParagraph(body, $"2. Chủ nhiệm đề tài: {project?.PiName ?? Blank}");
+                AppendParagraph(body, $"3. Đơn vị chủ trì: {(string.IsNullOrWhiteSpace(hostingUnit) ? Blank : hostingUnit)}");
+                AppendParagraph(body, $"4. Thời gian họp: {MeetingTime()}");
+                AppendParagraph(body, $"5. Địa điểm: {MeetingPlace()}");
+                AppendParagraph(body, "6. Danh sách thành viên của Hội đồng");
+                AppendParagraph(body, $"(Theo Quyết định số: {decisionNo}, {decisionDate})");
+                int[] rw = { 3500, 3956, 1900 };
+                bool[] rc = { false, false, true };
+                var roster = MinutesTable(body, new[] { "Họ và tên", "Đơn vị", "Nhiệm vụ" }, rw, rc);
+                foreach (var m in rosterMembers)
+                    MinutesRow(roster, new[] { m.User?.FullName ?? Blank, m.User?.Unit?.Name ?? "", CouncilRoleVi(m.MemberRole) }, rw, rc);
+                TableGap(body);
+                AppendParagraph(body, $"Tổng số thành viên: {rosterMembers.Count}");
+                AppendParagraph(body, $"Số thành viên có mặt: {Math.Min(decision.AttendingMembers, rosterMembers.Count)}    Số thành viên vắng mặt: {Math.Max(0, rosterMembers.Count - decision.AttendingMembers)}");
+                AppendParagraph(body, $"Khách mời dự: {Blank}");
+                AppendParagraph(body, "");
+
+                AppendHeading(body, "II. Kết luận và kiến nghị của hội đồng", 13);
+                AppendParagraph(body, "1. Ý kiến của các thành viên Hội đồng");
+                int[] ow = { 2600, 4256, 2500 };
+                bool[] oc = { false, false, false };
+                var op = MinutesTable(body, new[] { "Thành viên Hội đồng", "Về chuyên môn", "Về kinh phí" }, ow, oc);
+                if (opinionRows.Count == 0)
+                    MinutesRow(op, new[] { Blank, "", "" }, ow, oc);
+                foreach (var o in opinionRows)
+                    MinutesRow(op, new[] { o.Name, o.Academic, o.Budget }, ow, oc);
+                TableGap(body);
+                if (opinionsFromBallots && opinionRows.Count > 0)
+                    AppendParagraph(body, "(Tổng hợp từ phiếu đánh giá của từng thành viên — chi tiết ở Phụ lục.)", italic: true, fontSize: 11);
+                AppendQaIfAny(body, decision.QaEntries);
+
+                // 2. Kết quả đánh giá — tổng điểm lấy từ PHIẾU HỢP LỆ, đúng như hệ thống tính điểm TB.
+                var validTotal = ballots.Where(b => b.IsValidBallot).Sum(b => b.Details.Sum(d => d.GivenScore));
+                AppendParagraph(body, "2. Kết quả đánh giá");
+                if (ballots.Count > 0)
+                {
+                    int[] sw = { 3800, 1900, 1800, 1856 };
+                    bool[] sc = { false, true, true, true };
+                    var st = MinutesTable(body, new[] { "Thành viên", "Nhiệm vụ", "Điểm", "Phiếu" }, sw, sc);
+                    foreach (var b in ballots)
+                        MinutesRow(st, new[]
+                        {
+                            b.Name, CouncilRoleVi(b.Role),
+                            $"{b.Details.Sum(d => d.GivenScore).ToString("0.##", Vi)}/{b.Details.Sum(d => d.MaxScore).ToString("0.##", Vi)}",
+                            b.IsValidBallot ? "Hợp lệ" : "Không hợp lệ"
+                        }, sw, sc);
+                    TableGap(body);
+                }
+                AppendParagraph(body, $"a) Tổng điểm (các phiếu hợp lệ): {validTotal.ToString("0.##", Vi)}");
+                AppendParagraph(body, $"b) Trong đó số phiếu: hợp lệ {decision.ValidBallots}; không hợp lệ {decision.InvalidBallots}");
+                AppendParagraph(body, $"c) Điểm trung bình cuối cùng: {(decision.AverageScore.HasValue ? decision.AverageScore.Value.ToString("0.##", Vi) : Blank)}");
+                AppendParagraph(body, "3. Kết luận của Hội đồng");
+                AppendParagraph(body, $"Hội đồng kết luận: {resultVi}.", bold: true);
+                if (!string.IsNullOrWhiteSpace(decision.CouncilComments)) AppendParagraph(body, decision.CouncilComments!);
+                if (!string.IsNullOrWhiteSpace(decision.ResultJustification)) AppendParagraph(body, $"Căn cứ kết luận: {decision.ResultJustification}");
+                if (recommendations != null)
+                {
+                    AppendParagraph(body, "Kiến nghị:");
+                    foreach (var line in recommendations.Split('\n')) AppendParagraph(body, line);
+                }
+            }
+            else
+            {
+                // ── BIỂU MẪU 12 ──
+                AppendHeading(body, "TRƯỜNG ĐẠI HỌC FPT", 13, bold: true, justify: JustificationValues.Center);
+                AppendParagraph(body, "");
+                AppendHeading(body, "BIÊN BẢN HỌP HỘI ĐỒNG NGHIỆM THU", 14, bold: true, justify: JustificationValues.Center);
+                AppendHeading(body, $"ĐỀ TÀI CẤP TRƯỜNG NĂM {year}", 13, bold: true, justify: JustificationValues.Center);
+                AppendParagraph(body, "");
+                AppendParagraph(body, $"1. Tên đề tài: {project?.TitleVi ?? Blank}");
+                AppendParagraph(body, $"2. Chủ nhiệm đề tài: {project?.PiName ?? Blank}");
+                AppendParagraph(body, $"3. Quyết định thành lập Hội đồng nghiệm thu đề tài: số {decisionNo} {decisionDate}");
+                AppendParagraph(body, $"4. Thời gian họp Hội đồng: {MeetingTime()}");
+                AppendParagraph(body, $"5. Địa điểm: {MeetingPlace()}");
+                AppendParagraph(body, "6. Thành viên Hội đồng: (Danh sách kèm theo Quyết định thành lập Hội đồng)");
+                {
+                    int[] rw = { 3500, 3956, 1900 };
+                    bool[] rc = { false, false, true };
+                    var roster = MinutesTable(body, new[] { "Họ và tên", "Đơn vị", "Nhiệm vụ" }, rw, rc);
+                    foreach (var m in rosterMembers)
+                        MinutesRow(roster, new[] { m.User?.FullName ?? Blank, m.User?.Unit?.Name ?? "", CouncilRoleVi(m.MemberRole) }, rw, rc);
+                    TableGap(body);
+                }
+                AppendParagraph(body, $"Tổng số: {rosterMembers.Count}    Có mặt: {Math.Min(decision.AttendingMembers, rosterMembers.Count)}    Vắng mặt: " +
+                                      (absentNames.Count == 0 ? Math.Max(0, rosterMembers.Count - decision.AttendingMembers).ToString() : string.Join("; ", absentNames.Select(n => n.Replace("(Chair)", "(Chủ tịch)").Replace("(Secretary)", "(Thư ký)").Replace("(Opponent)", "(Phản biện)").Replace("(Member)", "(Ủy viên)")))));
+                AppendParagraph(body, $"7. Khách mời: {Blank}");
+                AppendParagraph(body, $"8. Chủ nhiệm đề tài báo cáo: {project?.PiName ?? Blank}");
+                // Sản phẩm cam kết + tình trạng nghiệm thu — thứ hội đồng nghiệm thu thực sự đánh giá
+                // (QĐ543 Điều 11.1, 12.3.b "mức độ hoàn thành sản phẩm cam kết").
+                var deliverables = await _contracts.Deliverables
+                    .Where(d => d.ProjectId == decision.ProjectId)
+                    .OrderBy(d => d.Sequence)
+                    .Select(d => new { d.ProductName, d.SubmittedAt, d.AcceptanceStatus, d.IsCompleted })
+                    .ToListAsync();
+                if (deliverables.Count > 0)
+                {
+                    AppendParagraph(body, "Sản phẩm của đề tài:");
+                    int[] dw = { 4400, 2400, 2556 };
+                    bool[] dc = { false, true, true };
+                    var dt = MinutesTable(body, new[] { "Sản phẩm", "Ngày nộp", "Kết quả nghiệm thu" }, dw, dc);
+                    foreach (var d in deliverables)
+                        MinutesRow(dt, new[]
+                        {
+                            d.ProductName,
+                            d.SubmittedAt.HasValue ? d.SubmittedAt.Value.AddHours(7).ToString("dd/MM/yyyy", Vi) : "Chưa nộp",
+                            d.AcceptanceStatus switch
+                            {
+                                "PASSED" or "PASS" or "ACCEPTED" => "Đạt",
+                                "FAILED" or "FAIL" or "REJECTED" => "Không đạt",
+                                _ => d.IsCompleted ? "Đã hoàn thành" : "Chưa nghiệm thu"
+                            }
+                        }, dw, dc);
+                    TableGap(body);
+                }
+                AppendParagraph(body, "9. Ý kiến của các thành viên Hội đồng");
+                var opponentNames = council.Members
+                    .Where(m => string.Equals(m.MemberRole, "Opponent", StringComparison.OrdinalIgnoreCase))
+                    .Select(m => m.User?.FullName ?? "")
+                    .ToList();
+                string Text((string Name, string Academic, string Budget) o) =>
+                    string.Join(" ", new[] { o.Academic, o.Budget }.Where(x => !string.IsNullOrWhiteSpace(x))).Replace("\n", "; ");
+                var idx = 1;
+                // QĐ543 Điều 12.3.b: phản biện nhận xét BẰNG VĂN BẢN theo Biểu mẫu 10 — trên hệ thống là
+                // phiếu "nhận xét nghiệm thu (BM10)" phản biện chấm mức 1–5 cho 4 nội dung + nhận xét.
+                if (opponentNames.Count == 0)
+                {
+                    AppendParagraph(body, "9.1. Phản biện: Hội đồng không có thành viên phản biện.");
+                    idx = 2;
+                }
+                foreach (var name in opponentNames)
+                {
+                    var bm10 = ballots.FirstOrDefault(b => string.Equals(b.Name?.Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase));
+                    if (bm10 == null)
+                    {
+                        var o = opinionRows.FirstOrDefault(x => string.Equals(x.Name.Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase));
+                        AppendParagraph(body, $"9.{idx}. Phản biện {idx} ({name}): " +
+                            (o.Name == null || string.IsNullOrWhiteSpace(Text(o)) ? "chưa nộp phiếu nhận xét (Biểu mẫu 10)." : Text(o)));
+                    }
+                    else
+                    {
+                        AppendParagraph(body, $"9.{idx}. Phản biện {idx} ({name}):");
+                        foreach (var d in bm10.Details)
+                        {
+                            var rating = Rating(d.GivenScore, d.MaxScore);
+                            AppendParagraph(body, $"- {d.CriterionName}: {rating}/5 ({RatingVi(rating)})" +
+                                (Clean(d.Comments) is { } c ? $" — {c}" : ""));
+                        }
+                        if (Clean(bm10.OtherRecommendations) is { } other) AppendParagraph(body, $"- Những nhận xét khác: {other}");
+                        AppendParagraph(body, $"- Đánh giá chung: {Clean(bm10.GeneralComments) ?? Blank}");
+                    }
+                    idx++;
+                }
+                var others = opinionRows.Where(o => !opponentNames.Any(n => string.Equals(n.Trim(), o.Name.Trim(), StringComparison.OrdinalIgnoreCase))).ToList();
+                if (others.Count == 0)
+                    others = (await _review.AcceptanceEvaluations
+                            .IgnoreQueryFilters()
+                            .Where(e => e.CouncilId == councilId && e.ProjectId == decision.ProjectId && e.SubmittedAt != null && e.FailReason != null)
+                            .Select(e => new { Name = e.EvaluatorMember.User.FullName, e.FailReason })
+                            .ToListAsync())
+                        .Where(e => Clean(e.FailReason) != null)
+                        .Select(e => (Name: e.Name, Academic: $"Không đạt — {Clean(e.FailReason)}", Budget: ""))
+                        .ToList();
+                AppendParagraph(body, $"9.{idx}. Ý kiến của các thành viên Hội đồng:" + (others.Count == 0 ? $" {Blank}" : ""));
+                foreach (var o in others)
+                    AppendParagraph(body, $"- {o.Name}: {Text(o)}");
+                AppendQaIfAny(body, decision.QaEntries);
+
+                var votes = await _review.AcceptanceEvaluations
+                    .IgnoreQueryFilters()
+                    .Where(e => e.CouncilId == councilId && e.ProjectId == decision.ProjectId && e.SubmittedAt != null)
+                    .Select(e => new { e.Result, e.IsValidBallot, e.FailReason, Name = e.EvaluatorMember.User.FullName, Role = e.EvaluatorMember.MemberRole })
+                    .ToListAsync();
+                bool IsPass(string r) => r is "PASS" or "PASSED" or ReviewResult.Approved;
+                AppendParagraph(body, "10. Kết luận của Hội đồng");
+                AppendParagraph(body, "10.1. Kết quả bỏ phiếu đánh giá:");
+                AppendParagraph(body, $"- Số phiếu phát ra: {rosterMembers.Count}    - Số phiếu thu về: {votes.Count}");
+                AppendParagraph(body, $"- Số phiếu hợp lệ: {decision.ValidBallots}    - Số phiếu không hợp lệ: {decision.InvalidBallots}");
+                AppendParagraph(body, $"- Kết quả đánh giá: Đạt: {votes.Count(v => v.IsValidBallot && IsPass(v.Result))}    Không đạt: {votes.Count(v => v.IsValidBallot && !IsPass(v.Result))}");
+                if (votes.Count > 0)
+                {
+                    // Phiếu của TỪNG thành viên (Biểu mẫu 11) — trước 03/10 chỉ in con số tổng.
+                    int[] vw = { 3300, 1700, 1500, 2856 };
+                    bool[] vc = { false, true, true, false };
+                    var vt = MinutesTable(body, new[] { "Thành viên", "Nhiệm vụ", "Phiếu", "Lý do (nếu Không đạt)" }, vw, vc);
+                    foreach (var v in votes.OrderBy(v => v.Role switch { "Chair" => 0, "Secretary" => 1, "Opponent" => 2, _ => 3 }))
+                        MinutesRow(vt, new[]
+                        {
+                            v.Name, CouncilRoleVi(v.Role),
+                            !v.IsValidBallot ? "Không hợp lệ" : IsPass(v.Result) ? "Đạt" : "Không đạt",
+                            Clean(v.FailReason) ?? ""
+                        }, vw, vc);
+                    TableGap(body);
+                }
+                AppendParagraph(body, $"Hội đồng kết luận: {resultVi}.", bold: true);
+                if (!string.IsNullOrWhiteSpace(decision.CouncilComments)) AppendParagraph(body, decision.CouncilComments!);
+                AppendParagraph(body, "10.2. Kiến nghị và định hướng giải quyết:");
+                if (recommendations == null) AppendParagraph(body, Blank);
+                else foreach (var line in recommendations.Split('\n')) AppendParagraph(body, line);
+            }
+
+            AppendParagraph(body, "");
+            AppendSignatureBlock(body,
+                leftTitle: "CHỦ TỊCH HỘI ĐỒNG", leftName: decision.ChairUser?.FullName
+                    ?? council.Members.FirstOrDefault(m => m.MemberRole == "Chair")?.User?.FullName,
+                rightTitle: "THƯ KÝ", rightName: decision.SecretaryUser?.FullName
+                    ?? council.Members.FirstOrDefault(m => m.MemberRole == "Secretary")?.User?.FullName,
+                // BM04/BM12 ghi "(Ký và ghi rõ họ tên)" — biên bản hội đồng không đóng dấu.
+                signNote: "(Ký và ghi rõ họ tên)");
+
+            // ── PHỤ LỤC: tổng hợp phiếu đánh giá — đủ điểm + nhận xét từng tiêu chí của từng người ──
+            if (ballots.Count > 0)
+            {
+                body.Append(new Paragraph(new Run(new Break { Type = BreakValues.Page })));
+                AppendHeading(body, isAcceptance ? "PHỤ LỤC: NHẬN XÉT CỦA PHẢN BIỆN" : "PHỤ LỤC: TỔNG HỢP PHIẾU ĐÁNH GIÁ",
+                    13, bold: true, justify: JustificationValues.Center);
+                AppendParagraph(body, isAcceptance
+                    ? "(Kèm theo Biên bản họp Hội đồng nghiệm thu — phiếu nhận xét theo Biểu mẫu 10; thang 1: Yếu – 2: Trung bình – 3: Khá – 4: Tốt – 5: Xuất sắc)"
+                    : "(Kèm theo Biên bản họp Hội đồng xét duyệt — phiếu đánh giá đề cương theo Biểu mẫu 03)",
+                    italic: true, justify: JustificationValues.Center);
+                var no = 1;
+                foreach (var b in ballots)
+                {
+                    var total = b.Details.Sum(d => d.GivenScore);
+                    var max = b.Details.Sum(d => d.MaxScore);
+                    AppendParagraph(body, "");
+                    AppendParagraph(body,
+                        isAcceptance
+                            ? $"{no}. {b.Name} — {CouncilRoleVi(b.Role)}"
+                            : $"{no}. {b.Name} — {CouncilRoleVi(b.Role)} — Tổng điểm: {total.ToString("0.##", Vi)}/{max.ToString("0.##", Vi)}" +
+                              (b.IsValidBallot ? "" : " (phiếu không hợp lệ)"), bold: true);
+                    int[] aw = isAcceptance ? new[] { 3700, 1700, 3956 } : new[] { 3400, 950, 950, 4056 };
+                    bool[] ac = isAcceptance ? new[] { false, true, false } : new[] { false, true, true, false };
+                    var t = isAcceptance
+                        ? MinutesTable(body, new[] { "Nội dung đánh giá", "Mức (1–5)", "Nhận xét" }, aw, ac)
+                        : MinutesTable(body, new[] { "Tiêu chí", "Tối đa", "Điểm", "Nhận xét" }, aw, ac);
+                    foreach (var d in b.Details)
+                        MinutesRow(t, isAcceptance
+                            ? new[] { d.CriterionName, $"{Rating(d.GivenScore, d.MaxScore)} — {RatingVi(Rating(d.GivenScore, d.MaxScore))}", Clean(d.Comments) ?? "" }
+                            : new[] { d.CriterionName, d.MaxScore.ToString("0.##", Vi), d.GivenScore.ToString("0.##", Vi), Clean(d.Comments) ?? "" },
+                            aw, ac);
+                    TableGap(body);
+                    if (isAcceptance)
+                    {
+                        if (Clean(b.OtherRecommendations) is { } oc) AppendParagraph(body, $"Những nhận xét khác: {oc}");
+                        AppendParagraph(body, $"Đánh giá chung: {Clean(b.GeneralComments) ?? Blank}");
+                    }
+                    else
+                    {
+                        if (Clean(b.GeneralComments) is { } gc) AppendParagraph(body, $"Nhận xét chung: {gc}");
+                        if (Clean(b.OtherRecommendations) is { } rc) AppendParagraph(body, $"Kiến nghị: {rc}");
+                    }
+                    no++;
+                }
+            }
+
+            // Đặt CUỐI CÙNG: SectionProperties phải là phần tử cuối của body.
+            ApplyAdministrativeFormat(mainPart, body);
+        }
+
+        var code = (project?.ProjectCode ?? decision.ProjectId.ToString()[..8]).Replace("/", "-").Replace(" ", "_");
+        return (ms.ToArray(), $"{(isAcceptance ? "BM12_BienBanNghiemThu" : "BM04_BienBanXetDuyet")}_{code}.docx");
+    }
+
+    // Bảng của biên bản (03/10, lần 2): bảng dùng chung không đặt độ rộng cố định nên Word tự co giãn
+    // cột (cột tên bị ép hẹp, chữ dồn), tiêu đề không căn giữa, "\n" trong ô bị nuốt mất. Bảng này:
+    // độ rộng cố định theo khổ in (A4 trừ lề NĐ30 ≈ 9356 twip), tiêu đề in đậm căn giữa có nền,
+    // cột số căn giữa, mỗi dòng nội dung là một đoạn riêng, cỡ chữ 12.
+    private static Table MinutesTable(Body body, string[] headers, int[] widths, bool[] center)
+    {
+        var table = new Table(new TableProperties(
+            new TableWidth { Width = widths.Sum().ToString(), Type = TableWidthUnitValues.Dxa },
+            new TableLayout { Type = TableLayoutValues.Fixed },
+            new TableBorders(
+                new TopBorder { Val = BorderValues.Single, Size = 4 },
+                new BottomBorder { Val = BorderValues.Single, Size = 4 },
+                new LeftBorder { Val = BorderValues.Single, Size = 4 },
+                new RightBorder { Val = BorderValues.Single, Size = 4 },
+                new InsideHorizontalBorder { Val = BorderValues.Single, Size = 4 },
+                new InsideVerticalBorder { Val = BorderValues.Single, Size = 4 }),
+            new TableCellMarginDefault(
+                new TopMargin { Width = "40", Type = TableWidthUnitValues.Dxa },
+                new TableCellLeftMargin { Width = 90, Type = TableWidthValues.Dxa },
+                new BottomMargin { Width = "40", Type = TableWidthUnitValues.Dxa },
+                new TableCellRightMargin { Width = 90, Type = TableWidthValues.Dxa })));
+        table.Append(new TableGrid(widths.Select(w => new GridColumn { Width = w.ToString() })));
+
+        var header = new TableRow(new TableRowProperties(new TableHeader()));
+        for (var i = 0; i < headers.Length; i++)
+            header.Append(MinutesCell(headers[i], widths[i], centerText: true, bold: true, shade: true, keepNext: true));
+        table.Append(header);
+        body.Append(table);
+        return table;
+    }
+
+    /// <summary>Điểm lưu theo trọng số (vd 20/25) → mức 1–5 của Biểu mẫu 10 (cùng phép đổi với giao diện chấm).</summary>
+    private static int Rating(decimal given, decimal max) =>
+        max <= 0 ? 0 : (int)Math.Clamp(Math.Round(given * 5m / max, MidpointRounding.AwayFromZero), 1, 5);
+
+    private static string RatingVi(int rating) => rating switch
+    {
+        1 => "Yếu", 2 => "Trung bình", 3 => "Khá", 4 => "Tốt", 5 => "Xuất sắc", _ => "—"
+    };
+
+    /// <summary>Khoảng trống nhỏ sau bảng — không có thì dòng chữ kế tiếp dính sát đáy bảng.</summary>
+    private static void TableGap(Body body) => AppendParagraph(body, "", fontSize: 6);
+
+    private static void MinutesRow(Table table, string[] cells, int[] widths, bool[] center)
+    {
+        var row = new TableRow(new TableRowProperties(new CantSplit()));
+        for (var i = 0; i < cells.Length; i++)
+            row.Append(MinutesCell(cells[i], widths[i], center[i]));
+        table.Append(row);
+    }
+
+    private static TableCell MinutesCell(string text, int width, bool centerText, bool bold = false, bool shade = false, bool keepNext = false)
+    {
+        var props = new TableCellProperties(
+            new TableCellWidth { Width = width.ToString(), Type = TableWidthUnitValues.Dxa },
+            new TableCellVerticalAlignment { Val = TableVerticalAlignmentValues.Center });
+        if (shade) props.Append(new Shading { Val = ShadingPatternValues.Clear, Fill = "E7E6E6", Color = "auto" });
+        var cell = new TableCell(props);
+        foreach (var line in (text ?? "").Split('\n'))
+        {
+            var rpr = new RunProperties(new FontSize { Val = "24" });
+            if (bold) rpr.Append(new Bold());
+            cell.Append(new Paragraph(
+                keepNext
+                    ? new ParagraphProperties(
+                        new KeepNext(),
+                        new Justification { Val = centerText ? JustificationValues.Center : JustificationValues.Left },
+                        new SpacingBetweenLines { Before = "0", After = "0" })
+                    : new ParagraphProperties(
+                        new Justification { Val = centerText ? JustificationValues.Center : JustificationValues.Left },
+                        new SpacingBetweenLines { Before = "0", After = "0" }),
+                new Run(rpr, new Text(line) { Space = SpaceProcessingModeValues.Preserve })));
+        }
+        return cell;
+    }
+
+    /// <summary>
+    /// Bỏ chuỗi rỗng và chuỗi là KHOÁ DỊCH lọt vào dữ liệu (vd "review.quickFillGeneralNote" do nút
+    /// "Điền nhanh" từng lưu nguyên khoá trước khi sửa i18n 03/10) — in ra biên bản là vô nghĩa.
+    /// </summary>
+    private static string? Clean(string? text)
+    {
+        var t = text?.Trim();
+        if (string.IsNullOrEmpty(t)) return null;
+        return System.Text.RegularExpressions.Regex.IsMatch(t, @"^[a-z][A-Za-z]*(\.[A-Za-z][A-Za-z0-9]*)+$") ? null : t;
+    }
+
+    private static IEnumerable<Domain.Entities.Review.CouncilMember> OrderedMembers(IEnumerable<Domain.Entities.Review.CouncilMember> members) =>
+        members.OrderBy(m => m.MemberRole switch { "Chair" => 0, "Secretary" => 1, "Opponent" => 2, _ => 3 })
+               .ThenBy(m => m.User?.FullName);
+
+    private static void AppendQaIfAny(Body body, IEnumerable<Domain.Entities.Review.CouncilQaEntry> qa)
+    {
+        var list = qa.OrderBy(q => q.Order).ToList();
+        if (list.Count == 0) return;
+        AppendParagraph(body, "Hỏi – đáp tại buổi họp:");
+        foreach (var q in list)
+        {
+            AppendParagraph(body, $"- Hỏi{(string.IsNullOrWhiteSpace(q.AskedBy) ? "" : $" ({q.AskedBy})")}: {q.Question}");
+            if (!string.IsNullOrWhiteSpace(q.Answer)) AppendParagraph(body, $"  Trả lời: {q.Answer}");
+        }
+    }
+
     // ── Thể thức văn bản hành chính — Nghị định 30/2020/NĐ-CP, Phụ lục I ────────────────────
     //
     // Trước đây các file Word xuất ra KHÔNG đặt gì cả: không font (Word tự dùng Calibri/Aptos),
@@ -1175,9 +1703,10 @@ AppendParagraph(body,
     /// <para>Chừa 4 dòng trống giữa chức danh và họ tên — chỗ ký tay và đóng dấu.</para>
     /// </summary>
     private static void AppendSignatureBlock(
-        Body body, string leftTitle, string? leftName, string rightTitle, string? rightName)
+        Body body, string leftTitle, string? leftName, string rightTitle, string? rightName,
+        string signNote = "(Ký, ghi rõ họ tên, đóng dấu)")
     {
-        static TableCell Cell(string title, string? name)
+        TableCell Cell(string title, string? name)
         {
             var cell = new TableCell(new TableCellProperties(
                 new TableCellWidth { Width = "4680", Type = TableWidthUnitValues.Dxa }));
@@ -1197,7 +1726,7 @@ AppendParagraph(body,
             }
 
             cell.Append(Line(title, bold: true));
-            cell.Append(Line("(Ký, ghi rõ họ tên, đóng dấu)", italic: true, size: 12));
+            cell.Append(Line(signNote, italic: true, size: 12));
             for (int i = 0; i < 4; i++) cell.Append(Line(""));
             cell.Append(Line(name ?? "", bold: true));
             return cell;

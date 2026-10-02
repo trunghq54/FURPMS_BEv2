@@ -17,4 +17,10 @@ public interface IDocumentExportService
     /// <em>trước → sau</em>. Đây chính là "phụ lục" trong ghi chú của nhóm.
     /// </summary>
     Task<(byte[] Content, string FileName)> ExportAmendmentDocAsync(Guid amendmentId);
+
+    /// <summary>
+    /// Biên bản họp hội đồng đã KHOÁ: BM04 (xét duyệt đề cương) hoặc BM12 (nghiệm thu) theo loại
+    /// phiên. Bản nháp không xuất được.
+    /// </summary>
+    Task<(byte[] Content, string FileName)> ExportMinutesDocAsync(Guid councilId, Guid? projectId);
 }

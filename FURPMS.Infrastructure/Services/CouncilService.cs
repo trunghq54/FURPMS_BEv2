@@ -19,14 +19,17 @@ public class CouncilService : ICouncilService
     private readonly IEmailService _email;
     private readonly IDecisionLogger _decisions;
     private readonly FURPMSDbContext _db;
+    private readonly INotifier? _notifier;
 
     public CouncilService(IReviewRepository review, IProposalRepository proposals,
         ISystemSettingService settings,
         INotificationRepository notifications,
         IEmailService email,
         IDecisionLogger decisions,
-        FURPMSDbContext db)
+        FURPMSDbContext db,
+        INotifier? notifier = null)
     {
+        _notifier = notifier;
         _decisions = decisions;
         _db = db;
         _review = review;
@@ -138,8 +141,14 @@ public class CouncilService : ICouncilService
 
         var member = await _review.CouncilMembers
             .Include(m => m.User)
+            .Include(m => m.Council)
             .FirstOrDefaultAsync(m => m.Id == memberId)
             ?? throw new KeyNotFoundException("Không tìm thấy thành viên hội đồng.");
+
+        var memberRoundType = member.Council?.RoundId == null
+            ? null
+            : await _review.ReviewRounds.Where(r => r.Id == member.Council.RoundId).Select(r => r.RoundType).FirstOrDefaultAsync();
+        ReviewShared.AssertRoleFitsRound(memberRole, memberRoundType);
 
         // Đã chấm rồi mà đổi vai là làm sai lệch hồ sơ đã lập: biên bản ghi "Chủ tịch: ông A" mà
         // nay ông A thành uỷ viên thì không ai đối chiếu lại được.
@@ -321,10 +330,20 @@ public class CouncilService : ICouncilService
         var assignedProjectIds = council.ProjectAssignments.Select(a => a.ProjectId).ToList();
         await ReviewShared.AssertNoCoiAsync(_proposals, assignedProjectIds, new[] { request.UserId });
 
+        var councilRoundType = council.RoundId == null
+            ? null
+            : await _review.ReviewRounds.Where(r => r.Id == council.RoundId).Select(r => r.RoundType).FirstOrDefaultAsync();
+        ReviewShared.AssertRoleFitsRound(request.MemberRole, councilRoundType);
+
         if (council.Members.Any(m => m.UserId == request.UserId))
             throw new InvalidOperationException("Người này đã có tên trong hội đồng.");
 
-        await AssertExpertiseAsync(council, request, assignedProjectIds);
+        var roundTrackIds = council.RoundId == null
+            ? new List<int>()
+            : await _review.ReviewRounds.Where(r => r.Id == council.RoundId).Select(r => r.CycleTrack.TrackId).ToListAsync();
+        var isOutOfField = await ReviewShared.AssertExpertiseAsync(
+            _db, _decisions, council.Id, request.UserId,
+            request.AcceptWithoutExpertise, request.ExpertiseNote, assignedProjectIds, roundTrackIds);
 
         // Trước đây `MaxMembersAllowed` chỉ là con số nằm trong DB, không ai kiểm — thêm 10 người
         // vào hội đồng vẫn được.
@@ -340,6 +359,7 @@ public class CouncilService : ICouncilService
             UserId = request.UserId,
             MemberRole = request.MemberRole,
             IsExternal = request.IsExternal,
+            ExpertiseNote = isOutOfField ? request.ExpertiseNote?.Trim() : null,
             Status = CouncilMemberStatus.Assigned,
             InvitationSentAt = null
         };
@@ -354,22 +374,6 @@ public class CouncilService : ICouncilService
         return MapMember(memberWithUser ?? member);
     }
 
-    /// <summary>
-    /// QĐ543 Điều 8.2 đòi hội đồng gồm người <b>có chuyên môn trong lĩnh vực</b>. Trước 26/08 hệ
-    /// thống không hề kiểm điều này — chỉ kiểm xung đột lợi ích, trùng tên và số lượng.
-    ///
-    /// <para><b>Chặn có kiểm soát, không khoá cứng:</b> Phòng QLKH vẫn gán được người ngoài lĩnh
-    /// vực (có ca cần thật — mời chuyên gia liên ngành, hoặc lĩnh vực hẹp không đủ người), nhưng
-    /// phải bật cờ và <b>ghi rõ lý do</b>, và lý do đó vào sổ quyết định của đề tài.</para>
-    ///
-    /// <para>Hội đồng chưa được gán đề tài nào thì không có lĩnh vực để so — bỏ qua, không bịa ra
-    /// một phán quyết từ chỗ không có dữ liệu.</para>
-    /// </summary>
-    private Task AssertExpertiseAsync(
-        ReviewCouncil council, AddCouncilMemberRequest request, List<Guid> assignedProjectIds) =>
-        ReviewShared.AssertExpertiseAsync(
-            _db, _decisions, council.Id, request.UserId,
-            request.AcceptWithoutExpertise, request.ExpertiseNote, assignedProjectIds);
 
     // Gán reviewer hết rồi gửi thư mời ĐỒNG LOẠT (1 nút) — set deadline xác nhận cho từng người.
     public async Task<int> SendInvitationsAsync(Guid councilId, DateTime? confirmDeadline)
@@ -588,8 +592,32 @@ public class CouncilService : ICouncilService
         }
 
         await _review.SaveChangesAsync();
+
+        // Từ chối thì Phòng QLKH phải biết NGAY để mời người thay — hội đồng thiếu người là không
+        // họp được. Trước 03/10 không báo ai, lý do người được mời gõ ra cũng không ai đọc.
+        if (!accept && _notifier is not null)
+        {
+            var reason = string.IsNullOrWhiteSpace(declineReason) ? "không ghi lý do" : $"lý do: {declineReason.Trim()}";
+            await _notifier.NotifyRoleAsync("Staff", "COUNCIL_INVITATION_DECLINED",
+                $"{member.User?.FullName ?? "Một thành viên"} từ chối tham gia hội đồng",
+                $"{member.User?.FullName ?? "Thành viên"} ({RoleVi(member.MemberRole)}) đã từ chối lời mời — {reason}. " +
+                "Cần mời người thay trước khi hội đồng họp.",
+                actionUrl: "/review-board",
+                entityType: "ReviewCouncil", entityId: member.CouncilId.ToString(),
+                priority: "HIGH");
+        }
+
         return MapMember(member);
     }
+
+    private static string RoleVi(string? role) => role switch
+    {
+        "Chair" => "Chủ tịch",
+        "Secretary" => "Thư ký",
+        "Opponent" => "Phản biện",
+        "Member" => "Ủy viên",
+        _ => role ?? "Thành viên"
+    };
 
     // Staff/Admin bấm "Xác nhận thay" — reviewer đã đồng ý ngoài hệ thống (điện thoại/email),
     // hoặc tiện demo. Chuyển ASSIGNED/INVITED → CONFIRMED, không cần đăng nhập tài khoản reviewer.
@@ -719,10 +747,15 @@ public class CouncilService : ICouncilService
         // là một phép so KHÔNG CÓ GÌ để so. Đây mới là chỗ chuyên môn thực sự bị đối chiếu với đề tài
         // thật trong luồng "trọn gói" — thiếu chỗ này thì cả luật chỉ có tác dụng ở luồng tạo-từng-
         // hội-đồng-một cũ (CreateCouncilAsync, gán đề tài ngay lúc tạo).
-        foreach (var memberId in memberUserIds)
+        // Lý do đã ghi lúc thêm người vào hội đồng thì DÙNG LẠI — không bắt Staff gõ lần hai (03/10).
+        foreach (var cm in council.Members)
+        {
+            var savedNote = cm.ExpertiseNote;
+            var note = string.IsNullOrWhiteSpace(expertiseNote) ? savedNote : expertiseNote;
             await ReviewShared.AssertExpertiseAsync(
-                _db, _decisions, councilId, memberId,
-                acceptWithoutExpertise, expertiseNote, new List<Guid> { projectId });
+                _db, _decisions, councilId, cm.UserId,
+                acceptWithoutExpertise || !string.IsNullOrWhiteSpace(savedNote), note, new List<Guid> { projectId });
+        }
 
         // Gỡ khỏi các hội đồng KHÁC của cùng vòng (đảm bảo 1 đề tài chỉ 1 hội đồng/vòng).
         var otherCouncilIds = await _review.Query()

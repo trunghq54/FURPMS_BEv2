@@ -462,6 +462,8 @@ public class CouncilMinutesTests
         db.AcceptanceEvaluations.AddRange(
             new AcceptanceEvaluation { CouncilId = council.Id, ProjectId = projectId, EvaluatorMemberId = opponent.Id, Result = EvaluationResult.Pass, IsValidBallot = true, SubmittedAt = DateTime.UtcNow },
             new AcceptanceEvaluation { CouncilId = council.Id, ProjectId = projectId, EvaluatorMemberId = members.First(m => m.MemberRole == CouncilMemberRole.Chair).Id, Result = EvaluationResult.Pass, IsValidBallot = true, SubmittedAt = DateTime.UtcNow });
+        // Phản biện nộp phiếu nhận xét BM10 (QĐ543 Điều 12.3.b) — bắt buộc từ 03/10.
+        TestBallots.Add(db, council.Id, projectId, opponent.Id, TestBallots.PassingScore);
         await db.SaveChangesAsync();
 
         var svc = MakeService(db);
@@ -504,5 +506,120 @@ public class CouncilMinutesTests
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             svc.SaveMinutesAsync(council.Id, secId, new SaveMinutesRequest { Result = ReviewResult.Approved }));
         Assert.Contains("phản biện", ex.Message);
+    }
+
+    // ── 03/10: chủ nhiệm được BÁO và được ĐỌC biên bản đã khoá ──────────────────────
+
+    /// <summary>
+    /// Phiên XÉT DUYỆT: khoá biên bản phải báo chủ nhiệm. Trước 03/10 chỉ nghiệm thu có báo —
+    /// "cần chỉnh sửa" mà PI không biết thì không ai sửa.
+    /// </summary>
+    [Fact]
+    public async Task ApproveMinutes_XetDuyet_BaoChuNhiem()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var (council, chairId, secId, _, proposal) = await SeedAsync(db);
+        var piId = (await db.Projects.FindAsync(proposal.ProjectId))!.PiUserId;
+        var svc = MakeService(db);
+
+        await svc.SaveMinutesAsync(council.Id, secId, new SaveMinutesRequest
+        {
+            Result = ReviewResult.RevisionRequired,
+            CouncilComments = "Làm rõ phương pháp thu thập dữ liệu.",
+            ResultJustification = "Đề cương tốt nhưng cần hoàn thiện."
+        });
+        await svc.ApproveMinutesAsync(council.Id, chairId);
+
+        var sent = await db.Notifications.Where(n => n.UserId == piId).ToListAsync();
+        Assert.Contains(sent, n => n.NotificationType == "REVIEW_MINUTES_FINALIZED" && n.Title.Contains("hoàn thiện"));
+    }
+
+    [Fact]
+    public async Task GetProjectMinutes_ChuNhiemDocDuoc_NguoiNgoaiBiChan()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var (council, chairId, secId, _, proposal) = await SeedAsync(db);
+        var piId = (await db.Projects.FindAsync(proposal.ProjectId))!.PiUserId;
+        var svc = MakeService(db);
+        await svc.SaveMinutesAsync(council.Id, secId, new SaveMinutesRequest
+        {
+            Result = ReviewResult.Approved, CouncilComments = "OK", Recommendations = "Bám sát tiến độ."
+        });
+
+        // Bản NHÁP thì PI chưa thấy gì.
+        Assert.Empty(await svc.GetProjectMinutesAsync(proposal.ProjectId, piId, new[] { "Faculty" }));
+
+        await svc.ApproveMinutesAsync(council.Id, chairId);
+        var mine = Assert.Single(await svc.GetProjectMinutesAsync(proposal.ProjectId, piId, new[] { "Faculty" }));
+        Assert.Equal("Bám sát tiến độ.", mine.Recommendations);
+
+        await Assert.ThrowsAsync<ForbiddenException>(() =>
+            svc.GetProjectMinutesAsync(proposal.ProjectId, Guid.NewGuid(), new[] { "Faculty" }));
+    }
+
+    [Fact]
+    public async Task CanReadMinutes_ChiStaffPiVaThanhVien()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var (council, _, _, memberId, proposal) = await SeedAsync(db);
+        var piId = (await db.Projects.FindAsync(proposal.ProjectId))!.PiUserId;
+        var svc = MakeService(db);
+
+        Assert.True(await svc.CanReadMinutesAsync(council.Id, proposal.ProjectId, Guid.NewGuid(), new[] { "Staff" }));
+        Assert.True(await svc.CanReadMinutesAsync(council.Id, proposal.ProjectId, piId, new[] { "Faculty" }));
+        Assert.True(await svc.CanReadMinutesAsync(council.Id, proposal.ProjectId, memberId, new[] { "Reviewer" }));
+        Assert.False(await svc.CanReadMinutesAsync(council.Id, proposal.ProjectId, Guid.NewGuid(), new[] { "Faculty" }));
+    }
+
+    /// <summary>Xuất Word BM04: bản nháp bị chặn; bản đã khoá có đúng tiêu đề mẫu và kết luận.</summary>
+    [Fact]
+    public async Task ExportMinutes_BM04_ChiXuatBanDaKhoa()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var (council, chairId, secId, _, proposal) = await SeedAsync(db);
+        var svc = MakeService(db);
+        var export = new DocumentExportService(
+            new ProposalRepository(db), new MasterDataRepository(db), new ContractRepository(db), new ReviewRepository(db));
+        await svc.SaveMinutesAsync(council.Id, secId, new SaveMinutesRequest
+        {
+            Result = ReviewResult.Approved, CouncilComments = "Đề cương đạt yêu cầu.", Recommendations = "Bám sát tiến độ."
+        });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => export.ExportMinutesDocAsync(council.Id, proposal.ProjectId));
+
+        await svc.ApproveMinutesAsync(council.Id, chairId);
+        var (content, fileName) = await export.ExportMinutesDocAsync(council.Id, proposal.ProjectId);
+
+        Assert.StartsWith("BM04_", fileName);
+        using var doc = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(new MemoryStream(content), false);
+        var text = doc.MainDocumentPart!.Document.Body!.InnerText;
+        Assert.Contains("BIÊN BẢN HỌP HỘI ĐỒNG XÉT DUYỆT ĐỀ CƯƠNG", text);
+        Assert.Contains("ĐỀ NGHỊ PHÊ DUYỆT", text);
+        Assert.Contains("Bám sát tiến độ.", text);
+        // Thư ký không ghi ý kiến từng thành viên ⇒ file vẫn phải có phụ lục phiếu đánh giá (03/10).
+        Assert.Contains("PHỤ LỤC: TỔNG HỢP PHIẾU ĐÁNH GIÁ", text);
+        Assert.Contains("Tổng điểm:", text);
+    }
+
+    /// <summary>Hội đồng nghiệm thu KHÔNG có phản biện thì không lưu được biên bản (trước 03/10 lọt).</summary>
+    [Fact]
+    public async Task SaveMinutes_NghiemThu_KhongCoPhanBien_Throws()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var (council, _, secId, _, proposal) = await SeedAsync(db);
+        await MakeAcceptanceRoundAsync(db, council);
+        var projectId = db.Proposals.First(p => p.Id == proposal.Id).ProjectId;
+        TestBallots.RemoveWithDetails(db, db.ProposalReviewScores.Where(s => s.CouncilId == council.Id).ToArray());
+        foreach (var m in db.Set<CouncilMember>().Where(m => m.CouncilId == council.Id).ToList())
+            db.AcceptanceEvaluations.Add(new AcceptanceEvaluation
+            {
+                CouncilId = council.Id, ProjectId = projectId, EvaluatorMemberId = m.Id,
+                Result = EvaluationResult.Pass, IsValidBallot = true, SubmittedAt = DateTime.UtcNow
+            });
+        await db.SaveChangesAsync();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            MakeService(db).SaveMinutesAsync(council.Id, secId, new SaveMinutesRequest { Result = ReviewResult.Approved }));
+        Assert.Contains("chưa có thành viên phản biện", ex.Message);
     }
 }

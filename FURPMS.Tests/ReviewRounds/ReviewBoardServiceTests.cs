@@ -714,4 +714,125 @@ public class ReviewBoardServiceTests
         Assert.Equal(proposal.Id, row.ProposalId);
         Assert.Equal("Nguyễn Văn Chủ Nhiệm", row.PiName);
     }
+
+    // ── 03/10: Phản biện chỉ ở hội đồng nghiệm thu · lý do khác lĩnh vực được LƯU ──────────
+
+    /// <summary>QĐ543 Điều 8.2: hội đồng xét duyệt không có vai Phản biện (chỉ nghiệm thu, Điều 12.3.b).</summary>
+    [Fact]
+    public async Task CreateCouncilPackage_XetDuyet_KhongNhanPhanBien()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var (_, project, _) = await SeedTrackedProjectAsync(db);
+        var chair = MakeExpert(db, "Chủ tịch", TrackAi);
+        var secretary = MakeExpert(db, "Thư ký", TrackAi);
+        var opp = MakeExpert(db, "Phản biện", TrackAi);
+        var round = MakeRound(cycleTrackId: project.CycleTrackId); // REVIEW
+        db.ReviewRounds.Add(round);
+        await db.SaveChangesAsync();
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => MakeService(db).CreateCouncilPackageAsync(round.Id, new CreateCouncilPackageRequest
+        {
+            ProjectIds = new List<Guid>(),
+            Members = new List<CouncilPackageMemberRequest>
+            {
+                new() { UserId = chair.Id, MemberRole = "Chair" },
+                new() { UserId = secretary.Id, MemberRole = "Secretary" },
+                new() { UserId = opp.Id, MemberRole = "Opponent" }
+            }
+        }, Guid.NewGuid()));
+        Assert.Contains("Phản biện", ex.Message);
+    }
+
+    /// <summary>
+    /// Hội đồng tạo khi CHƯA có đề tài (đúng cách form "Tạo hội đồng" làm) vẫn phải so với lĩnh vực
+    /// của PHIÊN, bắt ghi lý do và LƯU lý do. Trước 03/10 bỏ qua hẳn ⇒ lý do Staff gõ bị mất.
+    /// </summary>
+    [Fact]
+    public async Task CreateCouncilPackage_ChuaCoDeTai_NgoaiLinhVuc_LuuLyDo()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var (_, project, _) = await SeedTrackedProjectAsync(db);
+        var chair = MakeExpert(db, "Chủ tịch", TrackAi);
+        var secretary = MakeExpert(db, "Thư ký", TrackAi);
+        var outsider = MakeExpert(db, "Khác ngành", TrackIt);
+        var round = MakeRound(cycleTrackId: project.CycleTrackId);
+        db.ReviewRounds.Add(round);
+        await db.SaveChangesAsync();
+
+        CreateCouncilPackageRequest Req(string? note) => new()
+        {
+            ProjectIds = new List<Guid>(),
+            Members = new List<CouncilPackageMemberRequest>
+            {
+                new() { UserId = chair.Id, MemberRole = "Chair" },
+                new() { UserId = secretary.Id, MemberRole = "Secretary" },
+                new() { UserId = outsider.Id, MemberRole = "Member", AcceptWithoutExpertise = note != null, ExpertiseNote = note }
+            }
+        };
+
+        await Assert.ThrowsAsync<ArgumentException>(() => MakeService(db).CreateCouncilPackageAsync(round.Id, Req(null), Guid.NewGuid()));
+
+        var council = await MakeService(db).CreateCouncilPackageAsync(round.Id, Req("Cần chuyên gia kiến trúc hệ thống."), Guid.NewGuid());
+        var saved = await db.CouncilMembers.FirstAsync(m => m.CouncilId == council.Id && m.UserId == outsider.Id);
+        Assert.Equal("Cần chuyên gia kiến trúc hệ thống.", saved.ExpertiseNote);
+        Assert.Null((await db.CouncilMembers.FirstAsync(m => m.CouncilId == council.Id && m.UserId == chair.Id)).ExpertiseNote);
+    }
+
+    /// <summary>Gán đề tài sau đó: dùng lại lý do đã lưu, ghi vào sổ quyết định — không bắt gõ lần hai.</summary>
+    [Fact]
+    public async Task GanDeTai_DungLaiLyDoDaLuu_GhiSoQuyetDinh()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var (_, project, _) = await SeedTrackedProjectAsync(db);
+        var chair = MakeExpert(db, "Chủ tịch", TrackAi);
+        var secretary = MakeExpert(db, "Thư ký", TrackAi);
+        var outsider = MakeExpert(db, "Khác ngành", TrackIt);
+        var round = MakeRound(cycleTrackId: project.CycleTrackId);
+        db.ReviewRounds.Add(round);
+        db.ProjectRounds.Add(new ProjectRound { ProjectId = project.Id, RoundId = round.Id, Status = "PENDING" });
+        await db.SaveChangesAsync();
+
+        var council = await MakeService(db).CreateCouncilPackageAsync(round.Id, new CreateCouncilPackageRequest
+        {
+            ProjectIds = new List<Guid>(),
+            Members = new List<CouncilPackageMemberRequest>
+            {
+                new() { UserId = chair.Id, MemberRole = "Chair" },
+                new() { UserId = secretary.Id, MemberRole = "Secretary" },
+                new() { UserId = outsider.Id, MemberRole = "Member", AcceptWithoutExpertise = true, ExpertiseNote = "Chuyên gia liên ngành." }
+            }
+        }, Guid.NewGuid());
+
+        // Không truyền lý do lúc gán — phải tự lấy lý do đã lưu.
+        await TestServices.Councils(db).AssignProjectToCouncilAsync(council.Id, project.Id);
+
+        Assert.True(await db.ProjectDecisions.AnyAsync(d =>
+            d.ProjectId == project.Id && d.DecisionType == DecisionTypes.ExpertiseOverride && d.Reason == "Chuyên gia liên ngành."));
+    }
+
+    /// <summary>QĐ543 Điều 12.3.b: hội đồng NGHIỆM THU phải có phản biện (03/10).</summary>
+    [Fact]
+    public async Task CreateCouncilPackage_NghiemThu_KhongCoPhanBien_Throws()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var (_, project, _) = await SeedTrackedProjectAsync(db);
+        var chair = MakeExpert(db, "Chủ tịch", TrackAi);
+        var secretary = MakeExpert(db, "Thư ký", TrackAi);
+        var member = MakeExpert(db, "Ủy viên", TrackAi);
+        var round = MakeRound(cycleTrackId: project.CycleTrackId);
+        round.RoundType = "ACCEPTANCE";
+        db.ReviewRounds.Add(round);
+        await db.SaveChangesAsync();
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => MakeService(db).CreateCouncilPackageAsync(round.Id, new CreateCouncilPackageRequest
+        {
+            Members = new List<CouncilPackageMemberRequest>
+            {
+                new() { UserId = chair.Id, MemberRole = "Chair" },
+                new() { UserId = secretary.Id, MemberRole = "Secretary" },
+                new() { UserId = member.Id, MemberRole = "Member" }
+            }
+        }, Guid.NewGuid()));
+        Assert.Contains("phản biện", ex.Message);
+    }
 }

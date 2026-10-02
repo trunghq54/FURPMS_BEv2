@@ -15,6 +15,12 @@ public class CouncilMember
     public DateTime? ConfirmedAt { get; set; }
     public DateTime? DeclinedAt { get; set; }
     public string? DeclineReason { get; set; }
+    /// <summary>
+    /// Lý do Phòng QLKH vẫn mời người KHÔNG khai lĩnh vực của phiên (QĐ543 Điều 8.2). Lưu ngay lúc
+    /// thêm vào hội đồng (03/10) — trước đó hội đồng tạo khi chưa có đề tài nên lý do bị bỏ, và lúc
+    /// gán đề tài lại bắt gõ lần hai. Gán đề tài thì dùng lại lý do này để ghi sổ quyết định.
+    /// </summary>
+    public string? ExpertiseNote { get; set; }
     public string Status { get; set; } = "INVITED";
 
     /// <summary>

@@ -766,7 +766,7 @@ public class ContractLifecycleTests
     }
 
     private static DocumentExportService MakeExportService(FURPMS.Infrastructure.Data.FURPMSDbContext db) =>
-        new(new ProposalRepository(db), new MasterDataRepository(db), new ContractRepository(db));
+        new(new ProposalRepository(db), new MasterDataRepository(db), new ContractRepository(db), new ReviewRepository(db));
 
     /// <summary>In phụ lục cho đơn chưa duyệt = tạo giấy tờ khống, phải chặn.</summary>
     [Theory]

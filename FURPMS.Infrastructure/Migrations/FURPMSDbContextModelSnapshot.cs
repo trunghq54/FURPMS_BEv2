@@ -2979,6 +2979,10 @@ namespace FURPMS.Infrastructure.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("declined_at");
 
+                    b.Property<string>("ExpertiseNote")
+                        .HasColumnType("text")
+                        .HasColumnName("expertise_note");
+
                     b.Property<DateTime?>("InvitationSentAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("invitation_sent_at");

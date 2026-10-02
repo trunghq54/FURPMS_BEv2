@@ -307,6 +307,7 @@ public class ReviewRoundService : IReviewRoundService
             .Include(r => r.ProjectRounds)
             .FirstOrDefaultAsync(r => r.Id == roundId)
             ?? throw new KeyNotFoundException("Không tìm thấy vòng chấm.");
+        ReviewShared.AssertRoleFitsRound(request.MemberRole, round.RoundType);
 
         // Find or auto-create council for this round
         var council = await _review.Query()

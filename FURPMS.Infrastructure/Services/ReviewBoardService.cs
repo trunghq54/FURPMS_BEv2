@@ -412,6 +412,17 @@ public class ReviewBoardService : IReviewBoardService
         if (request.Members.GroupBy(m => m.UserId).Any(g => g.Count() > 1))
             throw new ArgumentException("Mỗi người chỉ được giữ 1 vị trí trong hội đồng.");
 
+        var packageRoundType = await _review.ReviewRounds
+            .Where(r => r.Id == roundId)
+            .Select(r => r.RoundType)
+            .FirstOrDefaultAsync();
+        foreach (var m in request.Members)
+            ReviewShared.AssertRoleFitsRound(m.MemberRole, packageRoundType);
+        if (string.Equals(packageRoundType, "ACCEPTANCE", StringComparison.OrdinalIgnoreCase)
+            && !request.Members.Any(m => string.Equals(m.MemberRole, "Opponent", StringComparison.OrdinalIgnoreCase)))
+            throw new ArgumentException(
+                "Hội đồng nghiệm thu phải có ít nhất 1 thành viên phản biện (QĐ543 Điều 12.3.b — phản biện nhận xét theo Biểu mẫu 10).");
+
         // Rule #12: kết quả chốt qua biên bản Thư ký soạn → Chủ tịch duyệt. Thiếu 1 trong 2 vai trò
         // thì hội đồng KHÔNG bao giờ chốt được → bắt buộc có đủ ngay khi tạo (tránh hội đồng "chết").
         bool Has(string role) => request.Members.Any(m => string.Equals(m.MemberRole, role, StringComparison.OrdinalIgnoreCase));
@@ -440,15 +451,23 @@ public class ReviewBoardService : IReviewBoardService
         // bắt đầu từ màn "Hội đồng & Chấm" bỏ qua hoàn toàn. Council chưa có Id thật cho tới khi tạo
         // entity bên dưới, nên sinh Id TRƯỚC để dùng chung cho cả assert lẫn entity.
         var councilId = Guid.NewGuid();
+        var roundTrackIds = await _review.ReviewRounds
+            .Where(r => r.Id == roundId)
+            .Select(r => r.CycleTrack.TrackId)
+            .ToListAsync();
+        var outOfField = new HashSet<Guid>();
         foreach (var m in request.Members)
-            await ReviewShared.AssertExpertiseAsync(
-                _db, _decisions, councilId, m.UserId,
-                m.AcceptWithoutExpertise, m.ExpertiseNote, request.ProjectIds);
+            if (await ReviewShared.AssertExpertiseAsync(
+                    _db, _decisions, councilId, m.UserId,
+                    m.AcceptWithoutExpertise, m.ExpertiseNote, request.ProjectIds, roundTrackIds))
+                outOfField.Add(m.UserId);
 
         var council = new ReviewCouncil
         {
             Id = councilId,
             RoundId = roundId,
+            EstablishmentDecisionNo = string.IsNullOrWhiteSpace(request.EstablishmentDecisionNo) ? null : request.EstablishmentDecisionNo.Trim(),
+            EstablishedAt = request.EstablishedAt,
             CouncilType = request.CouncilType ?? round.RoundType,
             MinMembersRequired = 3,
             MaxMembersAllowed = 5,
@@ -472,6 +491,7 @@ public class ReviewBoardService : IReviewBoardService
                 UserId = m.UserId,
                 MemberRole = m.MemberRole,
                 IsExternal = m.IsExternal,
+                ExpertiseNote = outOfField.Contains(m.UserId) ? m.ExpertiseNote?.Trim() : null,
                 Status = CouncilMemberStatus.Assigned,
                 InvitationSentAt = null
             });

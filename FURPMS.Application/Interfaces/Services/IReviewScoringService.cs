@@ -15,6 +15,15 @@ public interface IReviewScoringService
     Task<CouncilDecisionDto> ApproveMinutesAsync(Guid councilId, Guid chairUserId, Guid? projectId = null);
 
     /// <summary>
+    /// Các biên bản đã khoá của một đề tài. Được xem: Admin/Staff, chủ nhiệm đề tài, thành viên hội đồng
+    /// đã chấm đề tài đó.
+    /// </summary>
+    Task<List<ProjectMinutesDto>> GetProjectMinutesAsync(Guid projectId, Guid userId, IEnumerable<string> roles);
+
+    /// <summary>Được tải biên bản Word của hội đồng này không (cùng luật với <see cref="GetProjectMinutesAsync"/>).</summary>
+    Task<bool> CanReadMinutesAsync(Guid councilId, Guid projectId, Guid userId, IEnumerable<string> roles);
+
+    /// <summary>
     /// Chủ tịch <b>trả biên bản lại cho Thư ký sửa</b>, kèm ghi chú nêu rõ cần sửa gì.
     /// <para>
     /// QĐ543 Điều 8.3.c: Thư ký <i>ghi</i> biên bản, hội đồng <i>thông qua</i> — quy định không cho

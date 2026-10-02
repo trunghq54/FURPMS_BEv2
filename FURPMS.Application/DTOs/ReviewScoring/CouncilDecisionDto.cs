@@ -91,3 +91,14 @@ public class BallotTallyDto
     public decimal? AverageScore { get; set; }
     public List<MemberBallotDto> Ballots { get; set; } = new();
 }
+
+/// <summary>
+/// Biên bản ĐÃ KHOÁ của một đề tài, kèm loại phiên — cho trang đề tài của PI và Phòng QLKH (03/10).
+/// Trước đó PI không có chỗ nào đọc kết luận/kiến nghị của hội đồng, kể cả khi bị yêu cầu chỉnh sửa.
+/// </summary>
+public class ProjectMinutesDto : CouncilDecisionDto
+{
+    public Guid ProjectId { get; set; }
+    /// <summary>REVIEW (xét duyệt, BM04) hoặc ACCEPTANCE (nghiệm thu, BM12).</summary>
+    public string? RoundType { get; set; }
+}

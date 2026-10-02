@@ -101,6 +101,20 @@ internal static class ReviewShared
             .ToListAsync();
     }
 
+    /// <summary>
+    /// "Phản biện" chỉ có ở hội đồng NGHIỆM THU (QĐ543 Điều 12.3.b, nhận xét theo Biểu mẫu 10). Hội
+    /// đồng XÉT DUYỆT đề cương (Điều 8.2) gồm Chủ tịch, Thư ký và thành viên — không có vai phản biện.
+    /// Trước 03/10 mọi màn đều cho chọn "Phản biện" ở cả phiên xét duyệt.
+    /// </summary>
+    public static void AssertRoleFitsRound(string? memberRole, string? roundType)
+    {
+        if (string.Equals(memberRole, "Opponent", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(roundType, "ACCEPTANCE", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException(
+                "Hội đồng xét duyệt đề cương không có vai Phản biện (QĐ543 Điều 8.2). " +
+                "Phản biện chỉ có ở hội đồng nghiệm thu (Điều 12.3.b) — hãy chọn \"Thành viên\".");
+    }
+
     public static CouncilMemberResponse MapMember(CouncilMember m) => new()
     {
         Id = m.Id,
@@ -113,7 +127,9 @@ internal static class ReviewShared
         Status = m.Status,
         InvitationSentAt = m.InvitationSentAt,
         ConfirmedAt = m.ConfirmedAt,
-        DeclinedAt = m.DeclinedAt
+        DeclinedAt = m.DeclinedAt,
+        DeclineReason = m.DeclineReason,
+        ExpertiseNote = m.ExpertiseNote
     };
 
     // Rule #5 (COI): PI/thành viên của BẤT KỲ đề tài trong nhóm KHÔNG được là ủy viên chấm nhóm đó.
@@ -144,23 +160,25 @@ internal static class ReviewShared
     /// gia liên ngành, hoặc lĩnh vực hẹp không đủ người), nhưng phải bật cờ và <b>ghi rõ lý do</b>,
     /// và lý do đó vào sổ quyết định của đề tài.</para>
     ///
-    /// <para>Hội đồng chưa được gán đề tài nào thì không có lĩnh vực để so — bỏ qua, không bịa ra
-    /// một phán quyết từ chỗ không có dữ liệu.</para>
+    /// <para>Hội đồng chưa được gán đề tài nào thì so với lĩnh vực của PHIÊN (<paramref name="roundTrackIds"/>).
+    /// Trước 03/10 trường hợp này bỏ qua hẳn — mà form "Tạo hội đồng" luôn tạo hội đồng chưa có đề
+    /// tài, nên lý do Staff gõ lúc tạo bị bỏ, tới lúc gán đề tài lại bắt gõ lần hai.</para>
     /// </summary>
-    public static async Task AssertExpertiseAsync(
+    /// <returns><c>true</c> nếu người này NGOÀI lĩnh vực và đã được chấp nhận kèm lý do.</returns>
+    public static async Task<bool> AssertExpertiseAsync(
         FURPMSDbContext db, IDecisionLogger decisions,
         Guid councilId, Guid userId, bool acceptWithoutExpertise, string? expertiseNote,
-        List<Guid> assignedProjectIds)
+        List<Guid> assignedProjectIds, IReadOnlyCollection<int>? roundTrackIds = null)
     {
-        if (assignedProjectIds.Count == 0) return;
-
-        var trackIds = await db.Projects
-            .IgnoreQueryFilters()
-            .Where(p => assignedProjectIds.Contains(p.Id))
-            .Select(p => p.CycleTrack.TrackId)
-            .Distinct()
-            .ToListAsync();
-        if (trackIds.Count == 0) return;
+        var trackIds = assignedProjectIds.Count > 0
+            ? await db.Projects
+                .IgnoreQueryFilters()
+                .Where(p => assignedProjectIds.Contains(p.Id))
+                .Select(p => p.CycleTrack.TrackId)
+                .Distinct()
+                .ToListAsync()
+            : roundTrackIds?.ToList() ?? new List<int>();
+        if (trackIds.Count == 0) return false;
 
         var myTracks = await db.UserResearchTracks
             .Where(x => x.UserId == userId)
@@ -169,7 +187,7 @@ internal static class ReviewShared
 
         // Hội đồng chấm nhiều đề tài thuộc nhiều lĩnh vực: khớp MỘT lĩnh vực là đủ — đòi khớp hết
         // thì gần như không ai gán được.
-        if (myTracks.Intersect(trackIds).Any()) return;
+        if (myTracks.Intersect(trackIds).Any()) return false;
 
         var trackNames = await db.ResearchTracks
             .Where(t => trackIds.Contains(t.Id))
@@ -203,6 +221,7 @@ internal static class ReviewShared
                 $"Mời {name} vào hội đồng dù không khai lĩnh vực \"{linhVuc}\"",
                 "CouncilMember", $"{councilId}:{userId}",
                 reason: lyDo, decidedByRole: "Phòng QLKH");
+        return true;
     }
 
     // DÙNG CHUNG round theo track: tái dùng round cùng dimension+type còn mở (PENDING/OPEN), hoặc tạo mới
