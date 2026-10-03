@@ -40,7 +40,9 @@ public class FinalReportService : IFinalReportService
     public async Task<FinalReportDto> SubmitAsync(Guid contractId, SubmitFinalReportRequest request, Guid userId)
     {
         var reportLocation = NormalizeDocumentLocation(request.ReportFileUrl, "báo cáo tổng kết", required: true)!;
-        var summaryLocation = NormalizeDocumentLocation(request.SummaryFileUrl, "bản tóm tắt", required: false);
+        // QĐ543 Điều 13: lưu trữ phải có CẢ báo cáo đầy đủ lẫn bản tóm tắt. 04/10: bắt ngay lúc nộp — trước đây
+        // nộp thiếu vẫn qua, Phòng QLKH vẫn tiếp nhận, tới bước lưu trữ mới bị chặn và phải mở lại báo cáo.
+        var summaryLocation = NormalizeDocumentLocation(request.SummaryFileUrl, "bản tóm tắt", required: true);
 
         var language = request.Language?.Trim().ToUpperInvariant();
         if (language is not "VI" and not "EN")

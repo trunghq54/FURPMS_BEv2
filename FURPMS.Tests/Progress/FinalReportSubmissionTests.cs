@@ -42,7 +42,7 @@ public class FinalReportSubmissionTests
 
     private static SubmitFinalReportRequest Request() => new()
     {
-        ReportFileUrl = "https://example.com/final.pdf", Language = "VI"
+        ReportFileUrl = "https://example.com/final.pdf", SummaryFileUrl = "https://example.com/summary.pdf", Language = "VI"
     };
 
     [Fact]

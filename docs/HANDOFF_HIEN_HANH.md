@@ -217,6 +217,49 @@ Thầy góp ý: cán bộ phòng không có chuyên môn để cho Đạt/Không
   đã có kết luận; `StatusBadge` tô màu PASS/CONDITIONAL/FAIL.
 - **Số 0 đứng đầu** ("05"): sửa chung trong `components/ui/input.tsx` — xem chi tiết dưới.
 
+### 1.4w Ba sửa nhỏ trước buổi bảo vệ (04/10, 0h)
+
+1. **Trang chấm của hội đồng** (`ProposalReviewWorkspace`): tab đang mở nằm trên URL (`?tab=info|scoring|acceptance|minutes`).
+   Tải lại trang vẫn ở tab đó; tab không còn hợp lệ thì về "Thông tin".
+2. **Báo cáo tổng kết:**
+   - **Bắt buộc bản tóm tắt ngay lúc PI nộp** (`FinalReportService.SubmitAsync`, `required: true`; FE mờ nút Nộp khi thiếu).
+   - Trước đây nộp thiếu vẫn qua, Phòng QLKH vẫn tiếp nhận, tới bước lưu trữ (QĐ543 Điều 13) mới bị chặn.
+   - Test cập nhật: request có `SummaryFileUrl`. `Archive_WithoutSummary_IsBlocked` giữ nguyên cho dữ liệu cũ.
+3. **Lịch họp hội đồng mới tự điền giờ đề xuất** (`ScheduleMeetingSheet`):
+   - Lấy mốc muộn hơn giữa: ~1 giờ nữa (làm tròn lên 30 phút) và lúc kết thúc buổi họp muộn nhất đang có lịch, để tránh
+     lỗi "quá khứ" và "trùng giờ thành viên".
+   - Chỉ điền khi ô còn trống. Effect đặt SAU `reset`.
+
+BE 449/449. Không migration ⇒ revert commit là về như cũ.
+
+### 1.4v DB demo sạch cho buổi bảo vệ 04/10 (03/10, tối)
+
+- **Backup deploy gốc:** `D:\capstone\backup\furpms_deploy_0310.dump`.
+  - Lấy bằng `pg_dump` 18 chạy trong Docker; Railway chạy PostgreSQL 18, máy chỉ có pg_dump 17.
+- **Bản demo sạch:** `D:\capstone\backup\furpms_demo_sach_0310.dump`. Dựng như sau:
+  - Restore bản gốc vào Docker `furpms_deploy_copy` (port 5434, mật khẩu `localcopy`), rồi TRUNCATE mọi bảng nghiệp vụ.
+  - Giữ lại: users, roles, đơn vị, lĩnh vực, hồ sơ chuyên môn, loại đề tài, bộ tiêu chí, cấu hình.
+  - Tạo lại dữ liệu **bằng API thật**: backend chạy ở môi trường Staging để không seed dữ liệu demo; khoá lấy từ
+    appsettings.Development; `EMAIL_ENABLED=false` trong lúc seed.
+  - Script nằm trong scratchpad `seed/` (s1–s6, `timeshift.py`, `purge.py`).
+- **Nội dung:**
+  - 3 đợt: XUAN2026-UD (đóng), HE2026-CB (đóng), THU2026-UD (mở).
+  - A1 (CNN phổi, PI thuntse161992): trọn vòng đời tới thanh lý BM13.
+  - A2 (học máy bỏ học, PI phattannguyen2004): chi đợt 1, kỳ 1 đã nộp chờ đánh giá. Đây là đề tài bị trùng trong demo
+    chính.
+  - B1 (đề tài cơ bản, PI damdungns): đang thực hiện.
+  - C1 (gian lận thẻ, PI dungdmse170580): cần chỉnh sửa.
+- **Mốc thời gian:** dời về đúng các thời điểm trong năm 2026 bằng `timeshift.py` (nội suy theo mốc sự kiện của từng
+  đề tài).
+- **Đã dọn:** thông báo và log mail sinh ra lúc seed; 2 bộ tiêu chí rác.
+- **Kịch bản demo + tài liệu upload:** `D:\capstone\demo_tai_lieu\KichBan_Demo_FURPMS_04-10.docx`,
+  `D:\capstone\demo_tai_lieu\LuongChinh\01–09`.
+- **Khôi phục lên Railway** (khi cần làm sạch lại sau demo):
+  `docker run --rm -v D:/capstone/backup:/b postgres:18 pg_restore --clean --if-exists --no-owner --no-acl -d "<DATABASE_PUBLIC_URL>" /b/furpms_demo_sach_0310.dump`
+- 🐞 **Lỗi phát hiện khi seed, chưa sửa:** `CreateProposalAsync` lưu project + proposal TRƯỚC khi kiểm tra trần kinh
+  phí ⇒ báo 400 "vượt trần" nhưng vẫn để lại một bản nháp mồ côi. Cần kiểm tra trần trước khi lưu, hoặc bọc trong
+  transaction.
+
 ### 1.4u 🔴 Chỉ 2 loại đề tài CỐ ĐỊNH (BASIC / APPLIED) · lịch theo loại chỉ là mặc định (03/10, chiều) — luồng chính
 
 Deploy báo đề tài ứng dụng chỉ ra 1 kỳ tiến độ, và giải ngân lẫn lộn giữa hai loại. Gốc là "đề tài loại gì" được suy

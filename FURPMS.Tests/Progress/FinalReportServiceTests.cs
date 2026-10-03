@@ -65,6 +65,7 @@ public class FinalReportServiceTests
         var result = await service.SubmitAsync(contract.Id, new SubmitFinalReportRequest
         {
             ReportFileUrl = "https://example.com/new.pdf",
+            SummaryFileUrl = "https://example.com/summary.pdf",
             Language = "EN"
         }, contract.CreatedBy);
 
@@ -80,7 +81,7 @@ public class FinalReportServiceTests
         var (service, contract, _) = await SeedAsync("ACCEPTED");
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.SubmitAsync(contract.Id,
-            new SubmitFinalReportRequest { ReportFileUrl = "https://example.com/new.pdf", Language = "VI" },
+            new SubmitFinalReportRequest { ReportFileUrl = "https://example.com/new.pdf", SummaryFileUrl = "https://example.com/summary.pdf", Language = "VI" },
             contract.CreatedBy));
 
         Assert.Contains("không sửa được", ex.Message);
@@ -92,7 +93,7 @@ public class FinalReportServiceTests
         var (service, contract, _) = await SeedAsync("SUBMITTED");
 
         var ex = await Assert.ThrowsAsync<ArgumentException>(() => service.SubmitAsync(contract.Id,
-            new SubmitFinalReportRequest { ReportFileUrl = "https://example.com/new.pdf", Language = "abc.com" },
+            new SubmitFinalReportRequest { ReportFileUrl = "https://example.com/new.pdf", SummaryFileUrl = "https://example.com/summary.pdf", Language = "abc.com" },
             contract.CreatedBy));
 
         Assert.Contains("Tiếng Việt hoặc Tiếng Anh", ex.Message);
