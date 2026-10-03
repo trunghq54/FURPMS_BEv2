@@ -53,6 +53,13 @@ public interface ICouncilService
         Guid councilId, Guid projectId, bool acceptWithoutExpertise = false, string? expertiseNote = null);
     Task RemoveProjectFromCouncilAsync(Guid councilId, Guid projectId);
 
+    /// <summary>Trạng thái nhận lời của từng thành viên với MỘT đề tài (03/10).</summary>
+    Task<IReadOnlyList<ProjectInvitationStatusDto>> GetProjectInvitationsAsync(Guid councilId, Guid projectId);
+
+    /// <summary>Trả lời lời mời chấm MỘT đề tài — chính thành viên, hoặc Phòng QLKH ghi nhận hộ.</summary>
+    Task<ProjectInvitationStatusDto> RespondToProjectAsync(
+        Guid memberId, Guid projectId, Guid actingUserId, bool onBehalf, bool accept, string? declineReason);
+
     // Cảnh báo trùng lịch: thành viên hội đồng này có mặt ở hội đồng khác họp giao giờ.
     Task<IEnumerable<ScheduleConflictDto>> GetScheduleConflictsAsync(Guid councilId);
 

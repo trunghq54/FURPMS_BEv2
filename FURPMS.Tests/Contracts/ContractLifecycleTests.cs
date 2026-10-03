@@ -1,4 +1,6 @@
 using FURPMS.Application.Constants;
+using Microsoft.EntityFrameworkCore;
+using FURPMS.Application.DTOs.Contract;
 using FURPMS.Tests.Reminders;
 using FURPMS.Domain.Entities.Contracts;
 using FURPMS.Domain.Entities.Financial;
@@ -87,17 +89,13 @@ public class ContractLifecycleTests
 
         var pi = MakeUser();
         var rt = MakeResearchType();
+        rt.Code = "APPLIED";   // loại Ứng dụng (mã cố định)
         db.Users.Add(pi);
         db.ResearchTypes.Add(rt);
         await db.SaveChangesAsync();
 
-        // QĐ543 Điều 16.1: đề tài ỨNG DỤNG giải ngân 04 đợt theo tỉ lệ 30–30–30–10.
-        db.DisbursementTemplates.AddRange(
-            new DisbursementTemplate { ResearchTypeId = rt.Id, RoundNumber = 1, Percentage = 30m, ConditionDescription = "Sau khi ky hop dong", IsActive = true },
-            new DisbursementTemplate { ResearchTypeId = rt.Id, RoundNumber = 2, Percentage = 30m, ConditionDescription = "Sau danh gia tien do giai doan 1", IsActive = true },
-            new DisbursementTemplate { ResearchTypeId = rt.Id, RoundNumber = 3, Percentage = 30m, ConditionDescription = "Sau danh gia tien do giai doan 2", IsActive = true },
-            new DisbursementTemplate { ResearchTypeId = rt.Id, RoundNumber = 4, Percentage = 10m, ConditionDescription = "Sau nghiem thu Dat", IsActive = true });
-        await db.SaveChangesAsync();
+        // QĐ543 Điều 16.1: đề tài ỨNG DỤNG giải ngân 04 đợt theo tỉ lệ 30–30–30–10 — suy từ phân loại,
+        // không cần bảng mốc.
 
         var (project, proposal) = MakeApprovedProposal(pi.Id, rt.Id);
         db.Projects.Add(project);
@@ -117,13 +115,15 @@ public class ContractLifecycleTests
         Assert.All(result, t => Assert.Equal("PENDING", t.Status));
         // Tổng tiền phải khớp đúng giá trị hợp đồng, không lệch do làm tròn từng đợt.
         Assert.Equal(contract.TotalAmount, result.Sum(r => r.PlannedAmount));
-        Assert.Contains("nghiem thu", result[3].ConditionDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("nghiệm thu", result[3].ConditionDescription, StringComparison.OrdinalIgnoreCase);
     }
 
-    // ── Test 2: WHOLE with templates → uses template percentages ─────────────
+    // ── Test 2: bảng mốc cũ KHÔNG còn quyết định — chỉ theo phân loại (03/10) ──
+    // Trước đây bảng mốc được ưu tiên ⇒ loại Cơ bản có mốc 3 đợt thì giải ngân 3 đợt trong khi tiến độ chạy
+    // 1 kỳ; hai luồng lệch nhau.
 
     [Fact]
-    public async Task GenerateWhole_WithTemplate_UsesTemplatePercentages()
+    public async Task Generate_IgnoresTemplateTable_FollowsResearchKind()
     {
         var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
 
@@ -153,11 +153,9 @@ public class ContractLifecycleTests
         var svc = TestServices.Disbursements(db);
         var result = (await svc.GenerateAsync(contract.Id)).ToList();
 
-        Assert.Equal(3, result.Count);
-        Assert.Equal(40m, result[0].Percentage);
-        Assert.Equal(400_000m, result[0].PlannedAmount);
-        Assert.Equal(30m, result[1].Percentage);
-        Assert.Equal(30m, result[2].Percentage);
+        var single = Assert.Single(result);   // loại Cơ bản ⇒ 1 đợt 100% sau nghiệm thu
+        Assert.Equal(100m, single.Percentage);
+        Assert.Equal(1_000_000m, single.PlannedAmount);
     }
 
     // ── Test 3: PARTIAL → one tranche per deliverable ────────────────────────
@@ -200,7 +198,7 @@ public class ContractLifecycleTests
     }
 
     /// <summary>
-    /// Loại đề tài ỨNG DỤNG (RequireOrderingUnit) chưa có mốc nào vẫn phải ra 4 đợt 30–30–30–10.
+    /// Loại đề tài ỨNG DỤNG (mã APPLIED) chưa có mốc nào vẫn phải ra 4 đợt 30–30–30–10.
     /// Lỗi bắt được trên deploy 01/10: loại "Ứng dụng" do nhóm tự tạo (mã khác "APPLIED") không có
     /// mốc ⇒ trước đây chỉ ra 1 đợt 100% y như đề tài cơ bản.
     /// </summary>
@@ -211,7 +209,7 @@ public class ContractLifecycleTests
 
         var pi = MakeUser();
         var rt = MakeResearchType();
-        rt.RequireOrderingUnit = true;
+        rt.Code = "APPLIED";
         db.Users.Add(pi);
         db.ResearchTypes.Add(rt);
         await db.SaveChangesAsync();
@@ -867,7 +865,7 @@ public class ContractLifecycleTests
         var (db, tranches) = await SeedThreeTranchesAsync("IN_PROGRESS");
         var contractId = tranches[0].ContractId;
         var rt = db.ResearchTypes.Single();
-        rt.RequireOrderingUnit = true;          // Admin sửa lại: đây là đề tài ứng dụng
+        rt.Code = "APPLIED";          // gom về loại cố định Ứng dụng
         await db.SaveChangesAsync();
 
         var result = (await MakeDisbursementService(db).RegenerateAsync(contractId, "Loại đề tài cấu hình sai", Guid.NewGuid())).ToList();
@@ -1051,7 +1049,7 @@ public class ContractLifecycleTests
         var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
         var pi = MakeUser();
         var rt = MakeResearchType();
-        rt.RequireOrderingUnit = true;
+        rt.Code = "APPLIED";
         db.Users.Add(pi);
         db.ResearchTypes.Add(rt);
         await db.SaveChangesAsync();
@@ -1154,5 +1152,98 @@ public class ContractLifecycleTests
             System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c)
                 != System.Globalization.UnicodeCategory.NonSpacingMark);
         return new string(chars.ToArray()).Replace('đ', 'd').Replace('Đ', 'D');
+    }
+
+    // ── 03/10: lịch theo loại chỉ là MẶC ĐỊNH — Phòng QLKH chỉnh được, mỗi lần ghi sổ quyết định ──
+
+    [Fact]
+    public async Task SaveSchedule_EditAddRemove_RenumbersRecomputesAndLogs()
+    {
+        var (db, tranches) = await SeedThreeTranchesAsync("IN_PROGRESS");   // 40–40–20, mỗi đợt có minh chứng
+        var contractId = tranches[0].ContractId;
+        var svc = TestServices.Disbursements(db);
+
+        // Bỏ đợt 1, đổi chỗ, thêm đợt mới ở giữa: 50 (đợt 2 cũ) – 30 (mới) – 20 (đợt 3 cũ).
+        var result = (await svc.SaveScheduleAsync(contractId, new SaveDisbursementScheduleRequest
+        {
+            Reason = "Hội đồng duyệt điều chỉnh tiến độ cấp kinh phí",
+            Rows =
+            {
+                new DisbursementScheduleRow { Id = tranches[1].Id, Percentage = 50m, ConditionDescription = "Sau ký" },
+                new DisbursementScheduleRow { Percentage = 30m },
+                new DisbursementScheduleRow { Id = tranches[2].Id, Percentage = 20m, ConditionDescription = "Sau nghiệm thu" },
+            }
+        }, Guid.NewGuid())).OrderBy(x => x.RoundNumber).ToList();
+
+        Assert.Equal(new[] { 1, 2, 3 }, result.Select(x => x.RoundNumber));
+        Assert.Equal(new[] { 50m, 30m, 20m }, result.Select(x => x.Percentage));
+        Assert.Equal(new[] { 500_000m, 300_000m, 200_000m }, result.Select(x => x.PlannedAmount));
+        Assert.Equal(tranches[1].Id, result[0].Id);
+        Assert.Contains("tiến độ giai đoạn 1", result[1].ConditionDescription);   // điều kiện mặc định theo vị trí
+        Assert.False(await db.ContractDisbursements.AnyAsync(d => d.Id == tranches[0].Id));
+        Assert.True(await db.Documents.Where(d => d.EntityId == tranches[0].Id.ToString()).AllAsync(d => d.IsDeleted));
+        var log = Assert.Single(db.ProjectDecisions.Where(x => x.Result == "SCHEDULED"));
+        Assert.Contains("40–40–20% → 50–30–20%", log.Summary);
+    }
+
+    [Fact]
+    public async Task SaveSchedule_RequiresReasonAnd100Percent_AndKeepsPaidTranche()
+    {
+        var (db, tranches) = await SeedThreeTranchesAsync("IN_PROGRESS");
+        var contractId = tranches[0].ContractId;
+        var svc = TestServices.Disbursements(db);
+        SaveDisbursementScheduleRequest Req(string reason, params (int? id, decimal pct)[] rows) => new()
+        {
+            Reason = reason,
+            Rows = rows.Select(r => new DisbursementScheduleRow { Id = r.id, Percentage = r.pct }).ToList()
+        };
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            svc.SaveScheduleAsync(contractId, Req("", (tranches[0].Id, 100m)), Guid.NewGuid()));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            svc.SaveScheduleAsync(contractId, Req("Sửa", (tranches[0].Id, 50m), (null, 40m)), Guid.NewGuid()));
+
+        var paid = await db.ContractDisbursements.SingleAsync(d => d.Id == tranches[0].Id);
+        paid.Status = "DISBURSED";
+        await db.SaveChangesAsync();
+
+        // Đợt đã chi: không đổi tỉ lệ, không bỏ, không dời chỗ.
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            svc.SaveScheduleAsync(contractId, Req("Sửa", (tranches[0].Id, 30m), (null, 70m)), Guid.NewGuid()));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            svc.SaveScheduleAsync(contractId, Req("Sửa", (tranches[1].Id, 100m)), Guid.NewGuid()));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            svc.SaveScheduleAsync(contractId, Req("Sửa", (null, 60m), (tranches[0].Id, 40m)), Guid.NewGuid()));
+
+        var ok = (await svc.SaveScheduleAsync(contractId, Req("Gộp 2 đợt còn lại", (tranches[0].Id, 40m), (tranches[1].Id, 60m)),
+            Guid.NewGuid())).OrderBy(x => x.RoundNumber).ToList();
+        Assert.Equal(new[] { 400_000m, 600_000m }, ok.Select(x => x.PlannedAmount));
+        Assert.Equal("DISBURSED", ok[0].Status);
+    }
+
+    [Fact]
+    public async Task ProgressSchedule_CustomThenResetToTemplate_LogsAndBlocksOnceSubmitted()
+    {
+        var (db, tranches) = await SeedThreeTranchesAsync("IN_PROGRESS");   // loại cơ bản ⇒ mẫu 1 kỳ
+        var contractId = tranches[0].ContractId;
+        var svc = TestServices.ProgressReports(db);
+        var staff = Guid.NewGuid();
+
+        Assert.Equal(3, (await svc.GenerateScheduledRoundsAsync(contractId, 3, staff)).Count());
+        Assert.Single(db.ProjectDecisions.Where(x => x.Result == "SCHEDULED"));
+
+        // Staff bỏ một kỳ nháp cũng phải ghi lý do.
+        var draft = await db.ProgressReports.FirstAsync(r => r.ContractId == contractId && r.ReportRound == 3);
+        await Assert.ThrowsAsync<ArgumentException>(() => svc.DeleteAsync(draft.Id, staff, isStaff: true));
+
+        await Assert.ThrowsAsync<ArgumentException>(() => svc.ResetToTemplateAsync(contractId, " ", staff));
+        var reset = (await svc.ResetToTemplateAsync(contractId, "Lập nhầm 3 kỳ", staff)).ToList();
+        Assert.Single(reset);
+        Assert.Single(db.ProjectDecisions.Where(x => x.Result == "REGENERATED"));
+
+        var only = await db.ProgressReports.SingleAsync(r => r.ContractId == contractId);
+        only.Status = "SUBMITTED";
+        await db.SaveChangesAsync();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => svc.ResetToTemplateAsync(contractId, "Lại", staff));
     }
 }

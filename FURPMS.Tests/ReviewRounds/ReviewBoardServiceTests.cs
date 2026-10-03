@@ -71,6 +71,44 @@ public class ReviewBoardServiceTests
     private static ReviewBoardService MakeService(FURPMS.Infrastructure.Data.FURPMSDbContext db) =>
         TestServices.ReviewBoards(db);
 
+    // ── Tạo phiên (03/10) ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Lỗi deploy 03/10: bấm "Tạo phiên" khi còn phiên cùng loại đang mở thì đề tài bị thêm hết vào phiên
+    /// cũ, không ra phiên mới. Nay luôn ra phiên mới; đề tài đang chấm dở ở phiên cũ ở lại phiên cũ.
+    /// </summary>
+    [Fact]
+    public async Task CreateRound_WhileOldRoundOpen_CreatesNewSession_AndLeavesBusyProjectsAlone()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        db.CycleTracks.Add(new CycleTrack { Id = 1, CycleId = 1, TrackId = 1 });
+        var pi = MakeUser();
+        db.Users.Add(pi);
+        var (oldProject, oldProposal) = MakeProjectWithProposal(pi.Id);
+        var (newProject, newProposal) = MakeProjectWithProposal(pi.Id);
+        db.Projects.AddRange(oldProject, newProject);
+        db.Proposals.AddRange(oldProposal, newProposal);
+        var oldRound = MakeRound();
+        oldRound.Status = "OPEN";
+        db.ReviewRounds.Add(oldRound);
+        db.ProjectRounds.Add(new ProjectRound { ProjectId = oldProject.Id, RoundId = oldRound.Id, Status = "OPEN" });
+        await db.SaveChangesAsync();
+
+        var created = await MakeService(db).CreateRoundForTrackAsync(1, 1,
+            new CreateTrackRoundRequest { Dimension = "SCIENCE", RoundType = "REVIEW" });
+
+        Assert.NotEqual(oldRound.Id, created.Id);
+        Assert.Equal(2, db.ReviewRounds.Count());
+        // Đề tài mới vào phiên mới; đề tài đang chấm dở ở phiên cũ KHÔNG bị kéo sang.
+        Assert.True(db.ProjectRounds.Any(pr => pr.RoundId == created.Id && pr.ProjectId == newProject.Id));
+        Assert.False(db.ProjectRounds.Any(pr => pr.RoundId == created.Id && pr.ProjectId == oldProject.Id));
+        Assert.Equal(1, db.ProjectRounds.Count(pr => pr.RoundId == oldRound.Id));
+
+        // Thêm tay đề tài đang chấm dở sang phiên mới cũng bị chặn.
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            MakeService(db).AddProjectToRoundAsync(created.Id, oldProject.Id));
+    }
+
     // ── Xóa vòng ─────────────────────────────────────────────────────────────
 
     [Fact]

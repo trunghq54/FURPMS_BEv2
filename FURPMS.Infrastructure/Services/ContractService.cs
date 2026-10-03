@@ -67,7 +67,9 @@ public class ContractService : IContractService
                 ResearchTypeId = c.Project.ResearchTypeId,
                 ResearchTypeCode = c.Project.ResearchType.Code,
                 ResearchTypeName = c.Project.ResearchType.Name,
-                DefaultProgressRounds = c.Project.ResearchType.RequireOrderingUnit ? 2 : 1,
+                DefaultProgressRounds = c.Project.ResearchType.Code == ResearchKind.Applied ? 2 : 1,
+                IsApplied = c.Project.ResearchType.Code == ResearchKind.Applied,
+                ExpectedDisbursementRounds = c.Project.ResearchType.Code == ResearchKind.Applied ? 4 : 1,
                 CycleId = c.Project.CycleTrack.CycleId,
                 CycleCode = c.Project.CycleTrack.Cycle.SemesterCode
                     ?? c.Project.CycleTrack.Cycle.CycleYear.ToString(),
@@ -489,7 +491,9 @@ public class ContractService : IContractService
         ResearchTypeId = c.Project?.ResearchTypeId ?? 0,
         ResearchTypeCode = c.Project?.ResearchType?.Code,
         ResearchTypeName = c.Project?.ResearchType?.Name,
-        DefaultProgressRounds = c.Project?.ResearchType?.RequireOrderingUnit == true ? 2 : 1,
+        DefaultProgressRounds = ResearchKind.ProgressRounds(ResearchKind.IsApplied(c.Project?.ResearchType?.Code)),
+        IsApplied = ResearchKind.IsApplied(c.Project?.ResearchType?.Code),
+        ExpectedDisbursementRounds = ResearchKind.DisbursementRounds(ResearchKind.IsApplied(c.Project?.ResearchType?.Code)),
         CycleId = c.Project?.CycleTrack?.CycleId ?? 0,
         CycleCode = c.Project?.CycleTrack?.Cycle?.SemesterCode
             ?? c.Project?.CycleTrack?.Cycle?.CycleYear.ToString(),
@@ -518,7 +522,9 @@ public class ContractService : IContractService
         ResearchTypeId = c.Project?.ResearchTypeId ?? 0,
         ResearchTypeCode = c.Project?.ResearchType?.Code,
         ResearchTypeName = c.Project?.ResearchType?.Name,
-        DefaultProgressRounds = c.Project?.ResearchType?.RequireOrderingUnit == true ? 2 : 1,
+        DefaultProgressRounds = ResearchKind.ProgressRounds(ResearchKind.IsApplied(c.Project?.ResearchType?.Code)),
+        IsApplied = ResearchKind.IsApplied(c.Project?.ResearchType?.Code),
+        ExpectedDisbursementRounds = ResearchKind.DisbursementRounds(ResearchKind.IsApplied(c.Project?.ResearchType?.Code)),
         CycleId = c.Project?.CycleTrack?.CycleId ?? 0,
         CycleCode = c.Project?.CycleTrack?.Cycle?.SemesterCode
             ?? c.Project?.CycleTrack?.Cycle?.CycleYear.ToString(),

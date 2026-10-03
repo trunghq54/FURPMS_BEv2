@@ -42,13 +42,14 @@ public class ProgressReportService : IProgressReportService
         _ => result ?? ""
     };
 
-    // QĐ543 Điều 10.1: Ứng dụng 2 kỳ, Cơ bản 1 kỳ. Applied = loại có đặt hàng (RequireOrderingUnit).
+    // QĐ543 Điều 10.1: Ứng dụng 2 kỳ, Cơ bản 1 kỳ — theo MÃ loại cố định (03/10).
     private static int RequiredRounds(FURPMS.Domain.Entities.MasterData.ResearchType? type) =>
-        type?.RequireOrderingUnit == true ? 2 : 1;
+        ResearchKind.ProgressRounds(ResearchKind.IsApplied(type?.Code));
 
     // Staff sinh sẵn các kỳ báo cáo — chia đều theo mốc hợp đồng; bỏ qua kỳ đã có.
     // roundCount: Staff tự chọn số kỳ; bỏ trống → mặc định theo loại (Ứng dụng 2 / Cơ bản 1).
-    public async Task<IEnumerable<ProgressReportSummaryDto>> GenerateScheduledRoundsAsync(Guid contractId, int? roundCount = null)
+    public async Task<IEnumerable<ProgressReportSummaryDto>> GenerateScheduledRoundsAsync(
+        Guid contractId, int? roundCount = null, Guid? staffId = null)
     {
         var contract = await _contracts.Query()
             .Include(c => c.Project).ThenInclude(p => p.ResearchType)
@@ -69,9 +70,11 @@ public class ProgressReportService : IProgressReportService
         var totalDays = end.DayNumber - start.DayNumber;
         var chunk = required > 0 ? totalDays / required : totalDays;
 
+        var added = 0;
         for (int round = 1; round <= required; round++)
         {
             if (existing.Contains(round)) continue;
+            added++;
             var pStart = start.AddDays(chunk * (round - 1));
             var pEnd = round == required ? end : start.AddDays(chunk * round);
             await _contracts.AddProgressReportAsync(new ProgressReport
@@ -88,8 +91,53 @@ public class ProgressReportService : IProgressReportService
                 Status = ProgressReportStatus.Draft
             });
         }
+        // Lịch tiến độ là quyết định của Phòng QLKH (mặc định theo loại, chỉnh được) ⇒ ghi sổ (03/10).
+        if (added > 0 && staffId.HasValue)
+            _decisions.Log(
+                contract.ProjectId, DecisionTypes.ResultReopened,
+                roundCount.HasValue
+                    ? $"Lập lịch báo cáo tiến độ tuỳ chỉnh: {required} kỳ (thêm {added} kỳ)"
+                    : $"Lập lịch báo cáo tiến độ theo mẫu {(ResearchKind.IsApplied(contract.Project.ResearchType?.Code) ? "ứng dụng" : "cơ bản")}: {required} kỳ (thêm {added} kỳ)",
+                "Contract", contract.Id.ToString(),
+                result: "SCHEDULED", decidedBy: staffId.Value, decidedByRole: "Phòng QLKH");
         await _contracts.SaveChangesAsync();
         return await GetByContractAsync(contractId);
+    }
+
+    /// <summary>
+    /// Xoá hết các kỳ còn NHÁP rồi lập lại theo mẫu của loại đề tài (03/10) — khi lịch đã lập sai (loại đề tài
+    /// từng cấu hình sai trên deploy, hay chỉnh tay rồi muốn về mặc định). Có kỳ đã nộp / đã có kết luận thì chặn:
+    /// xoá từng kỳ (kèm lý do) hoặc "Mở lại" trước. Ghi sổ quyết định.
+    /// </summary>
+    public async Task<IEnumerable<ProgressReportSummaryDto>> ResetToTemplateAsync(Guid contractId, string reason, Guid staffId)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException("Lập lại lịch báo cáo tiến độ phải ghi lý do.");
+        var contract = await _contracts.Query()
+            .Include(c => c.Project).ThenInclude(p => p.ResearchType)
+            .FirstOrDefaultAsync(c => c.Id == contractId)
+            ?? throw new KeyNotFoundException("Không tìm thấy hợp đồng.");
+
+        var reports = await _contracts.ProgressReports.Where(r => r.ContractId == contractId).ToListAsync();
+        if (reports.Any(r => r.Status != ProgressReportStatus.Draft || !string.IsNullOrWhiteSpace(r.EvaluationResult)))
+            throw new InvalidOperationException(
+                "Đã có kỳ báo cáo được nộp hoặc có kết luận — không xoá cả lịch được. Xoá từng kỳ (ghi lý do) hoặc " +
+                "\"Mở lại\" kết luận trước.");
+
+        var ids = reports.Select(r => r.Id).ToList();
+        var items = await _contracts.ProgressReportItems.Where(i => ids.Contains(i.ReportId)).ToListAsync();
+        if (items.Count > 0) _contracts.RemoveProgressReportItemsRange(items);
+        _contracts.RemoveProgressReportsRange(reports);
+        await _contracts.SaveChangesAsync();
+
+        var result = (await GenerateScheduledRoundsAsync(contractId)).ToList();
+        _decisions.Log(
+            contract.ProjectId, DecisionTypes.ResultReopened,
+            $"Lập lại lịch báo cáo tiến độ theo mẫu {(ResearchKind.IsApplied(contract.Project.ResearchType?.Code) ? "ứng dụng" : "cơ bản")}: {reports.Count} kỳ → {result.Count} kỳ",
+            "Contract", contract.Id.ToString(),
+            result: "REGENERATED", reason: reason.Trim(), decidedBy: staffId, decidedByRole: "Phòng QLKH");
+        await _contracts.SaveChangesAsync();
+        return result;
     }
 
     public async Task<IEnumerable<ProgressReportSummaryDto>> GetByContractAsync(Guid contractId)
@@ -340,20 +388,23 @@ public class ProgressReportService : IProgressReportService
             throw new InvalidOperationException(
                 "Kỳ báo cáo này đã có kết luận của hội đồng — bấm \"Mở lại\" (ghi lý do) trước rồi mới xoá được.");
 
-        // PI chỉ xoá bản nháp. Phòng QLKH xoá được cả bản ĐÃ NỘP (nộp nhầm, nộp sai kỳ) nhưng phải
-        // ghi lý do (03/10 — trước đây bản đã nộp kẹt vĩnh viễn, kể cả khi rõ ràng là sai sót).
-        if (report.Status != ProgressReportStatus.Draft)
+        // PI chỉ xoá bản nháp. Phòng QLKH xoá được cả bản ĐÃ NỘP (nộp nhầm, nộp sai kỳ). 03/10: mọi lần
+        // Phòng QLKH xoá một kỳ (kể cả kỳ nháp — tức là bớt một kỳ khỏi lịch) đều phải ghi lý do và vào sổ
+        // quyết định, vì số kỳ tiến độ quyết định cả việc giải ngân các đợt giữa.
+        if (report.Status != ProgressReportStatus.Draft && !isStaff)
+            throw new InvalidOperationException(
+                $"Báo cáo đang ở trạng thái {StatusText.Vi(report.Status)} — chủ nhiệm chỉ xoá được bản nháp. " +
+                "Nếu nộp nhầm, liên hệ phòng QLKH.");
+        if (isStaff)
         {
-            if (!isStaff)
-                throw new InvalidOperationException(
-                    $"Báo cáo đang ở trạng thái {StatusText.Vi(report.Status)} — chủ nhiệm chỉ xoá được bản nháp. " +
-                    "Nếu nộp nhầm, liên hệ phòng QLKH.");
             if (string.IsNullOrWhiteSpace(reason))
-                throw new ArgumentException("Xoá báo cáo đã nộp phải ghi lý do.");
+                throw new ArgumentException("Phòng QLKH xoá kỳ báo cáo tiến độ phải ghi lý do.");
             var ky = string.IsNullOrWhiteSpace(report.RoundName) ? $"kỳ {report.ReportRound}" : report.RoundName;
             _decisions.Log(
                 report.Contract.ProjectId, DecisionTypes.ResultReopened,
-                $"Phòng QLKH xoá báo cáo tiến độ {ky} đã nộp",
+                report.Status == ProgressReportStatus.Draft
+                    ? $"Phòng QLKH bỏ kỳ báo cáo tiến độ {ky} khỏi lịch"
+                    : $"Phòng QLKH xoá báo cáo tiến độ {ky} đã nộp",
                 "ProgressReport", report.Id.ToString(),
                 result: "DELETED", reason: reason.Trim(), decidedBy: actingUserId, decidedByRole: "Phòng QLKH");
         }

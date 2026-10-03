@@ -154,74 +154,37 @@ public class CycleService : ICycleService
         return types.Select(MapType);
     }
 
-    public async Task<ResearchTypeDto> CreateResearchTypeAsync(CreateResearchTypeRequest request)
-    {
-        if (string.IsNullOrWhiteSpace(request.Name))
-            throw new ArgumentException("Tên loại đề tài là bắt buộc.");
+    // 03/10: hệ thống chỉ có 2 loại đề tài cố định (BASIC / APPLIED) — loại tạo thêm không có luồng nào đi theo.
+    private const string FixedTypesMessage =
+        "Hệ thống chỉ có 2 loại đề tài cố định theo QĐ543: Cơ bản và Ứng dụng. Không tạo thêm hay xoá loại; " +
+        "chỉ sửa được tên và trần kinh phí.";
 
-        var code = string.IsNullOrWhiteSpace(request.Code)
-            ? request.Name.ToUpperInvariant().Replace(" ", "_")
-            : request.Code!.Trim().ToUpperInvariant();
-
-        if (await _masterData.ResearchTypes.AnyAsync(t => t.Code == code))
-            throw new InvalidOperationException($"Mã loại '{code}' đã tồn tại.");
-
-        var type = new ResearchType
-        {
-            Code = code,
-            Name = request.Name.Trim(),
-            MaxBudgetCap = request.MaxBudgetCap,
-            RequireOrderingUnit = request.RequireOrderingUnit,
-            RequirePublication = false,
-            IsActive = true
-        };
-        _masterData.Add(type);
-        await _masterData.SaveChangesAsync();
-        return MapType(type);
-    }
+    public Task<ResearchTypeDto> CreateResearchTypeAsync(CreateResearchTypeRequest request) =>
+        throw new InvalidOperationException(FixedTypesMessage);
 
     public async Task<ResearchTypeDto> UpdateResearchTypeAsync(int id, UpdateResearchTypeRequest request)
     {
         var type = await _masterData.ResearchTypes.FirstOrDefaultAsync(t => t.Id == id)
             ?? throw new KeyNotFoundException($"Loại đề tài {id} không tồn tại.");
 
+        // Chỉ tên và trần kinh phí (QĐ543 Điều 14.3: Hiệu trưởng có thể nâng trần). Phân loại = mã, không đổi.
         if (!string.IsNullOrWhiteSpace(request.Name)) type.Name = request.Name.Trim();
-        if (request.MaxBudgetCap.HasValue) type.MaxBudgetCap = request.MaxBudgetCap.Value;
-        if (request.RequireOrderingUnit.HasValue) type.RequireOrderingUnit = request.RequireOrderingUnit.Value;
+        if (request.MaxBudgetCap.HasValue)
+        {
+            if (request.MaxBudgetCap.Value <= 0)
+                throw new ArgumentException("Trần kinh phí phải lớn hơn 0.");
+            type.MaxBudgetCap = request.MaxBudgetCap.Value;
+        }
 
         _masterData.Update(type);
         await _masterData.SaveChangesAsync();
         return MapType(type);
     }
 
-    public async Task<ResearchTypeDto> DeactivateResearchTypeAsync(int id) => await SetActiveAsync(id, false);
-    public async Task<ResearchTypeDto> ReactivateResearchTypeAsync(int id) => await SetActiveAsync(id, true);
+    public Task<ResearchTypeDto> DeactivateResearchTypeAsync(int id) => throw new InvalidOperationException(FixedTypesMessage);
+    public Task<ResearchTypeDto> ReactivateResearchTypeAsync(int id) => throw new InvalidOperationException(FixedTypesMessage);
 
-    private async Task<ResearchTypeDto> SetActiveAsync(int id, bool active)
-    {
-        var type = await _masterData.ResearchTypes.FirstOrDefaultAsync(t => t.Id == id)
-            ?? throw new KeyNotFoundException($"Loại đề tài {id} không tồn tại.");
-        type.IsActive = active;
-        _masterData.Update(type);
-        await _masterData.SaveChangesAsync();
-        return MapType(type);
-    }
-
-    public async Task DeleteResearchTypeAsync(int id)
-    {
-        var type = await _masterData.ResearchTypes.FirstOrDefaultAsync(t => t.Id == id)
-            ?? throw new KeyNotFoundException($"Loại đề tài {id} không tồn tại.");
-
-        // Chỉ xoá vĩnh viễn khi KHÔNG có đợt/đề tài nào tham chiếu (tránh vỡ FK).
-        var usedByCycle = await _cycles.Query().AnyAsync(c => c.ResearchTypeId == id);
-        var usedByProposal = await _proposals.Projects.IgnoreQueryFilters().AnyAsync(p => p.ResearchTypeId == id);
-        if (usedByCycle || usedByProposal)
-            throw new InvalidOperationException(
-                "Loại đề tài đang được đợt/đề tài sử dụng — chỉ có thể vô hiệu hóa, không thể xoá vĩnh viễn.");
-
-        _masterData.Remove(type);
-        await _masterData.SaveChangesAsync();
-    }
+    public Task DeleteResearchTypeAsync(int id) => throw new InvalidOperationException(FixedTypesMessage);
 
     private static ResearchTypeDto MapType(ResearchType t) => new()
     {
@@ -230,7 +193,10 @@ public class CycleService : ICycleService
         Name = t.Name,
         MaxBudgetCap = t.MaxBudgetCap,
         RequireOrderingUnit = t.RequireOrderingUnit,
-        IsActive = t.IsActive
+        IsActive = t.IsActive,
+        Kind = ResearchKind.Of(ResearchKind.IsApplied(t.Code)),
+        ProgressRounds = ResearchKind.ProgressRounds(ResearchKind.IsApplied(t.Code)),
+        DisbursementRounds = ResearchKind.DisbursementRounds(ResearchKind.IsApplied(t.Code))
     };
 
     public async Task<CycleDto> CreateCycleAsync(CreateCycleRequest request, Guid createdBy)
@@ -246,6 +212,8 @@ public class CycleService : ICycleService
 
         var researchType = await _masterData.ResearchTypes.FirstOrDefaultAsync(t => t.Id == request.ResearchTypeId)
             ?? throw new KeyNotFoundException($"Loại đề tài {request.ResearchTypeId} không tồn tại.");
+        if (!ResearchKind.IsFixedCode(researchType.Code))
+            throw new InvalidOperationException("Đợt chỉ chọn được loại Cơ bản hoặc Ứng dụng.");
 
         await ValidateCycleAsync(request.Name, cycleYear, openDate, deadline, researchType.Id, excludeCycleId: null);
 
@@ -327,10 +295,25 @@ public class CycleService : ICycleService
         if (!string.IsNullOrWhiteSpace(request.AcademicYear) && int.TryParse(request.AcademicYear, out int cycleYear))
             cycle.CycleYear = cycleYear;
 
-        if (request.ResearchTypeId > 0)
+        if (request.ResearchTypeId > 0 && request.ResearchTypeId != cycle.ResearchTypeId)
         {
             var researchType = await _masterData.ResearchTypes.FirstOrDefaultAsync(t => t.Id == request.ResearchTypeId)
                 ?? throw new KeyNotFoundException($"Loại đề tài {request.ResearchTypeId} không tồn tại.");
+            if (!ResearchKind.IsFixedCode(researchType.Code))
+                throw new InvalidOperationException("Đợt chỉ chọn được loại Cơ bản hoặc Ứng dụng.");
+
+            // 03/10: đề tài lưu loại RIÊNG (chép từ đợt lúc nộp). Trước đây đổi loại của đợt thì đề tài đã nộp
+            // vẫn giữ loại cũ ⇒ đợt ghi "Ứng dụng" mà đề tài chạy luồng cơ bản (1 kỳ tiến độ, 1 đợt giải ngân).
+            // Nay đổi theo cả đợt; đã có hợp đồng thì chặn vì lịch giải ngân/tiến độ đã sinh theo loại cũ.
+            var projects = await _proposals.Projects
+                .Where(p => p.CycleTrack.CycleId == cycleId)
+                .ToListAsync();
+            if (await _proposals.Projects.AnyAsync(p => p.CycleTrack.CycleId == cycleId && p.Contracts.Any()))
+                throw new InvalidOperationException(
+                    "Đợt đã có đề tài ký hợp đồng — không đổi loại đề tài của đợt được nữa (lịch giải ngân và kỳ báo " +
+                    "cáo tiến độ đã sinh theo loại cũ). Lịch của từng hợp đồng vẫn chỉnh được ở tab Giải ngân / " +
+                    "Báo cáo tiến độ.");
+            foreach (var project in projects) project.ResearchTypeId = researchType.Id;
             cycle.ResearchTypeId = researchType.Id;
         }
 
@@ -647,6 +630,8 @@ public class CycleService : ICycleService
         Status = c.Status == CycleStatus.Open ? "Open" : c.Status == CycleStatus.Closed ? "Closed" : c.Status,
         ResearchTypeId = c.ResearchTypeId,
         ResearchTypeName = c.ResearchType?.Name ?? string.Empty,
+        ResearchKind = ResearchKind.Of(ResearchKind.IsApplied(c.ResearchType?.Code)),
+        IsApplied = ResearchKind.IsApplied(c.ResearchType?.Code),
         SubmissionStartDate = c.SubmissionOpenDate.ToString("yyyy-MM-dd"),
         SubmissionDeadline = c.SubmissionDeadline.ToString("yyyy-MM-dd"),
         FundingCap = c.ResearchType?.MaxBudgetCap ?? 0m,

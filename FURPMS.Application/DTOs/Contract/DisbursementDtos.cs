@@ -42,6 +42,23 @@ public class DisbursementFixRequest
     public string Reason { get; set; } = "";
 }
 
+/// <summary>
+/// Phòng QLKH chỉnh cả lịch giải ngân của một hợp đồng (03/10): thêm / bớt / sửa tỉ lệ và điều kiện từng đợt.
+/// Gửi CẢ danh sách theo đúng thứ tự đợt; đợt có <c>Id</c> là đợt cũ, không có là đợt mới.
+/// </summary>
+public class SaveDisbursementScheduleRequest
+{
+    public string Reason { get; set; } = "";
+    public List<DisbursementScheduleRow> Rows { get; set; } = new();
+}
+
+public class DisbursementScheduleRow
+{
+    public int? Id { get; set; }
+    public decimal Percentage { get; set; }
+    public string? ConditionDescription { get; set; }
+}
+
 /// <summary>Staff gắn / gỡ sản phẩm minh chứng cho một đợt giải ngân. <c>null</c> = gỡ.</summary>
 public class LinkDeliverableRequest
 {

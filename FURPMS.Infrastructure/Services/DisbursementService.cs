@@ -108,6 +108,129 @@ public class DisbursementService : IDisbursementService
     }
 
     /// <summary>
+    /// Chỉnh cả lịch giải ngân của một hợp đồng (03/10). Lịch theo loại đề tài chỉ là MẶC ĐỊNH (QĐ543 Điều 16);
+    /// Phòng QLKH thêm / bớt / sửa tỉ lệ, điều kiện từng đợt khi quyết định khác đi. Luật:
+    /// <list type="bullet">
+    /// <item>Bắt buộc lý do; ghi sổ quyết định "trước → sau".</item>
+    /// <item>Tổng tỉ lệ đúng 100%; mỗi đợt &gt; 0.</item>
+    /// <item>Đợt ĐÃ CHI giữ nguyên vị trí và tỉ lệ, không xoá được (muốn sửa: Huỷ xác nhận trước).</item>
+    /// <item>Đã lập quyết toán ⇒ chặn (số đã chi đã chép sang biên bản thanh lý).</item>
+    /// </list>
+    /// Số tiền các đợt chưa chi tính lại từ giá trị hợp đồng; đợt chưa chi cuối cùng nhận phần còn lại để tổng
+    /// luôn khớp. Đợt bị bỏ thì minh chứng của nó bị gỡ theo.
+    /// </summary>
+    public async Task<IEnumerable<DisbursementResponse>> SaveScheduleAsync(
+        Guid contractId, SaveDisbursementScheduleRequest request, Guid staffId)
+    {
+        if (string.IsNullOrWhiteSpace(request.Reason))
+            throw new ArgumentException("Chỉnh lịch giải ngân phải ghi lý do.");
+        var rows = request.Rows ?? new List<DisbursementScheduleRow>();
+        if (rows.Count == 0)
+            throw new ArgumentException("Lịch giải ngân phải có ít nhất 1 đợt.");
+        if (rows.Count > 12)
+            throw new ArgumentException("Lịch giải ngân tối đa 12 đợt.");
+        if (rows.Any(r => r.Percentage <= 0 || r.Percentage > 100))
+            throw new ArgumentException("Tỉ lệ mỗi đợt phải lớn hơn 0% và không quá 100%.");
+        var sum = rows.Sum(r => r.Percentage);
+        if (Math.Abs(sum - 100m) > 0.01m)
+            throw new ArgumentException($"Tổng tỉ lệ các đợt phải đúng 100% (hiện {sum:0.##}%).");
+        if (rows.Where(r => r.Id.HasValue).GroupBy(r => r.Id).Any(g => g.Count() > 1))
+            throw new ArgumentException("Một đợt bị gửi hai lần.");
+
+        var contract = await _contracts.Query()
+            .Include(c => c.Disbursements)
+            .FirstOrDefaultAsync(c => c.Id == contractId)
+            ?? throw new KeyNotFoundException("Không tìm thấy hợp đồng.");
+        if (await _contracts.Settlements.AnyAsync(s => s.ContractId == contractId))
+            throw new InvalidOperationException(
+                "Hợp đồng đã lập hồ sơ quyết toán — xoá hồ sơ quyết toán trước rồi mới chỉnh lịch giải ngân.");
+
+        var existing = contract.Disbursements.ToDictionary(d => d.Id);
+        if (rows.Any(r => r.Id.HasValue && !existing.ContainsKey(r.Id.Value)))
+            throw new ArgumentException("Có đợt không thuộc hợp đồng này.");
+        for (var i = 0; i < rows.Count; i++)
+        {
+            if (rows[i].Id is not int id || existing[id].Status != DisbursementStatus.Disbursed) continue;
+            var paid = existing[id];
+            if (paid.RoundNumber != i + 1 || paid.Percentage != rows[i].Percentage)
+                throw new InvalidOperationException(
+                    $"Đợt {paid.RoundNumber} đã chi — không đổi vị trí hay tỉ lệ được. Huỷ xác nhận đợt đó trước nếu cần sửa.");
+        }
+        var keep = rows.Where(r => r.Id.HasValue).Select(r => r.Id!.Value).ToHashSet();
+        var removed = contract.Disbursements.Where(d => !keep.Contains(d.Id)).ToList();
+        if (removed.Any(d => d.Status == DisbursementStatus.Disbursed))
+            throw new InvalidOperationException("Không bỏ được đợt đã chi. Huỷ xác nhận đợt đó trước nếu chi nhầm.");
+
+        var before = string.Join("–", contract.Disbursements.OrderBy(d => d.RoundNumber).Select(d => $"{d.Percentage:0.##}"));
+
+        // Bước 1: bỏ đợt thừa (gỡ minh chứng) và dời số đợt chưa chi ra chỗ tạm — chỉ mục (hợp đồng, số đợt) là
+        // duy nhất nên đổi chỗ trực tiếp 2 ↔ 3 sẽ đụng nhau giữa chừng.
+        var removedIds = removed.Select(d => d.Id.ToString()).ToList();
+        foreach (var doc in await _documents.Query()
+                     .Where(x => x.EntityType == "Disbursement" && removedIds.Contains(x.EntityId) && !x.IsDeleted)
+                     .ToListAsync())
+        {
+            doc.IsDeleted = true;
+            _documents.Update(doc);
+        }
+        if (removed.Count > 0) _contracts.RemoveDisbursementsRange(removed);
+        foreach (var d in contract.Disbursements.Where(d => keep.Contains(d.Id) && d.Status != DisbursementStatus.Disbursed))
+            d.RoundNumber += 1000;
+        await _documents.SaveChangesAsync();
+        await _contracts.SaveChangesAsync();
+
+        // Bước 2: đánh số, tỉ lệ, điều kiện, số tiền.
+        var paidTotal = rows.Where(r => r.Id is int id && existing[id].Status == DisbursementStatus.Disbursed)
+            .Sum(r => existing[r.Id!.Value].PlannedAmount);
+        var unpaidIdx = Enumerable.Range(0, rows.Count)
+            .Where(i => !(rows[i].Id is int id && existing[id].Status == DisbursementStatus.Disbursed))
+            .ToList();
+        var allocated = paidTotal;
+        var added = new List<ContractDisbursement>();
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var r = rows[i];
+            ContractDisbursement d;
+            if (r.Id is int id) d = existing[id];
+            else
+            {
+                d = new ContractDisbursement { ContractId = contract.Id, Status = DisbursementStatus.Pending };
+                added.Add(d);
+            }
+            d.RoundNumber = i + 1;
+            if (d.Status == DisbursementStatus.Disbursed) continue;
+
+            d.Percentage = r.Percentage;
+            d.ConditionDescription = string.IsNullOrWhiteSpace(r.ConditionDescription)
+                ? DefaultCondition(i, rows.Count)
+                : r.ConditionDescription.Trim();
+            if (i == unpaidIdx[^1])
+                d.PlannedAmount = contract.TotalAmount - allocated;
+            else
+            {
+                d.PlannedAmount = Math.Round(contract.TotalAmount * r.Percentage / 100m, 0);
+                allocated += d.PlannedAmount;
+            }
+        }
+        if (added.Count > 0) _contracts.AddDisbursementsRange(added);
+
+        var after = string.Join("–", rows.Select(r => $"{r.Percentage:0.##}"));
+        _decisions.Log(
+            contract.ProjectId, DecisionTypes.ResultReopened,
+            $"Chỉnh lịch giải ngân hợp đồng {contract.ContractNumber}: {before}% → {after}%",
+            "Contract", contract.Id.ToString(),
+            result: "SCHEDULED", reason: request.Reason.Trim(), decidedBy: staffId, decidedByRole: "Phòng QLKH");
+        await _contracts.SaveChangesAsync();
+        return await GetByContractAsync(contractId);
+    }
+
+    /// <summary>Điều kiện mặc định cho đợt Staff thêm mà không ghi điều kiện (theo vị trí trong lịch).</summary>
+    private static string DefaultCondition(int index, int count) =>
+        index == count - 1 ? "Sau khi Hội đồng nghiệm thu đánh giá \"Đạt\""
+        : index == 0 ? "Sau khi ký kết Hợp đồng NCKH với Chủ nhiệm đề tài"
+        : $"Sau khi đánh giá tiến độ giai đoạn {index} đạt yêu cầu";
+
+    /// <summary>
     /// Huỷ "đã giải ngân" bấm nhầm (03/10) — đợt về Chờ, giữ minh chứng đã tải. Chặn khi đã lập hồ sơ
     /// thanh lý: số "đã chi" đã chép sang biên bản, phải xoá/huỷ ký thanh lý trước.
     /// </summary>
@@ -318,7 +441,7 @@ public class DisbursementService : IDisbursementService
             {
                 c.SignedAt,
                 ProjectStatus = c.Project.Status,
-                IsApplied = c.Project.ResearchType.RequireOrderingUnit
+                IsApplied = c.Project.ResearchType.Code == ResearchKind.Applied
             })
             .FirstOrDefaultAsync();
         if (contract == null) return null;
@@ -354,9 +477,11 @@ public class DisbursementService : IDisbursementService
             return $"đây là đợt giải ngân CUỐI — theo QĐ543 chỉ giải ngân sau khi hội đồng nghiệm thu Đạt " +
                    $"(đề tài đang \"{StatusText.Vi(ctx.ProjectStatus)}\").";
 
-        if (ctx.IsApplied && !isFinal && d.RoundNumber >= 2)
+        // Đợt giữa thứ k chờ tiến độ kỳ k−1 Đạt: đề tài ứng dụng luôn vậy (Điều 16.1.b); đề tài cơ bản mà Phòng
+        // QLKH chỉnh lịch thành nhiều đợt thì cũng vậy nếu kỳ tiến độ đó có trong lịch (03/10).
+        var need = d.RoundNumber - 1;
+        if (!isFinal && d.RoundNumber >= 2 && (ctx.IsApplied || ctx.ProgressResults.ContainsKey(need)))
         {
-            var need = d.RoundNumber - 1;
             ctx.ProgressResults.TryGetValue(need, out var result);
             if (!string.Equals(result, "PASS", StringComparison.OrdinalIgnoreCase))
                 return $"chờ hội đồng tiến độ kết luận Đạt cho báo cáo tiến độ kỳ {need} " +
@@ -399,19 +524,15 @@ public class DisbursementService : IDisbursementService
     private async Task<List<ContractDisbursement>> GenerateFromTemplateAsync(
         Domain.Entities.Contracts.Contract contract)
     {
-        var templates = await _masterData.DisbursementTemplates
-            .Where(t => t.ResearchTypeId == contract.Project.ResearchTypeId && t.IsActive)
-            .OrderBy(t => t.RoundNumber)
-            .ToListAsync();
-
-        if (templates.Count == 0)
-        {
-            var isApplied = await _masterData.ResearchTypes
-                .Where(t => t.Id == contract.Project.ResearchTypeId)
-                .Select(t => t.RequireOrderingUnit)
-                .FirstOrDefaultAsync();
-            templates = DefaultTemplates(isApplied);
-        }
+        // 03/10: CHỈ theo phân loại của loại đề tài. Bảng `disbursement_templates` (không màn nào sửa được, chỉ
+        // seed cho mã APPLIED/BASIC) từng được ưu tiên ⇒ đổi phân loại của một loại thì số kỳ tiến độ đổi theo
+        // còn lịch giải ngân vẫn theo bảng cũ — hai luồng nói hai điều khác nhau. Nội dung bảng đó vốn trùng
+        // Điều 16 nên bỏ không mất gì.
+        var isApplied = await _masterData.ResearchTypes
+            .Where(t => t.Id == contract.Project.ResearchTypeId)
+            .Select(t => t.Code == ResearchKind.Applied)
+            .FirstOrDefaultAsync();
+        var templates = DefaultTemplates(isApplied);
 
         var list = new List<ContractDisbursement>();
         decimal allocated = 0;

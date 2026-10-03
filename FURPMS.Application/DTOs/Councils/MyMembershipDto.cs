@@ -4,6 +4,9 @@ public class MyMembershipDto
 {
     public Guid MemberId { get; set; }
     public Guid CouncilId { get; set; }
+    /// <summary>Trạng thái nhận lời RIÊNG đề tài của dòng này (INVITED/CONFIRMED/DECLINED); null = theo hội đồng.</summary>
+    public string? ProjectInviteStatus { get; set; }
+    public string? ProjectDeclineReason { get; set; }
     public Guid? RoundId { get; set; }
     public string RoundType { get; set; } = null!;
     public string RoundStatus { get; set; } = null!;

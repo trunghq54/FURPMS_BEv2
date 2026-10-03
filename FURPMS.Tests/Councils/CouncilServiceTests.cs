@@ -490,6 +490,78 @@ public class CouncilServiceTests
     private static CouncilService MakeSvc(FURPMS.Infrastructure.Data.FURPMSDbContext db) =>
         TestServices.Councils(db);
 
+    // ── Lời mời theo TỪNG đề tài (03/10) ──────────────────────────────────────
+
+    /// <summary>
+    /// Hội đồng đã gửi thư mời, thành viên đã nhận lời ĐỀ TÀI A. Gán thêm đề tài B ⇒ mỗi thành viên có
+    /// lời mời riêng cho B (được thông báo); từ chối B không ảnh hưởng A và tư cách thành viên hội đồng.
+    /// </summary>
+    [Fact]
+    public async Task ProjectInvitations_PerProject_AcceptCouncil_ThenNewProjectInvitedSeparately()
+    {
+        var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
+        var pi = MakeUser();
+        var staff = MakeUser();
+        var reviewer = MakeUser();
+        var chair = MakeUser();
+        var secretary = MakeUser();
+        var (a, aProposal) = MakeProjectWithProposal(pi.Id);
+        var (b, bProposal) = MakeProjectWithProposal(pi.Id);
+        b.TitleVi = "Đề tài B";
+        var round = MakeRound();
+        var council = MakeCouncil(a.Id, staff.Id, round.Id);
+        db.Users.AddRange(pi, staff, reviewer, chair, secretary);
+        db.Projects.AddRange(a, b);
+        db.Proposals.AddRange(aProposal, bProposal);
+        db.ReviewRounds.Add(round);
+        db.ProjectRounds.AddRange(
+            new ProjectRound { ProjectId = a.Id, RoundId = round.Id, Status = "OPEN" },
+            new ProjectRound { ProjectId = b.Id, RoundId = round.Id, Status = "OPEN" });
+        db.ReviewCouncils.Add(council);
+        db.CouncilProjectAssignments.Add(new CouncilProjectAssignment { CouncilId = council.Id, ProjectId = a.Id });
+        db.CouncilMeetings.Add(new CouncilMeeting { CouncilId = council.Id, ScheduledAt = DateTime.UtcNow.AddDays(3), DurationMinutes = 60, Location = "P.A" });
+        await db.SaveChangesAsync();
+
+        var service = TestServices.Councils(db);
+        var rv = await service.AddMemberAsync(council.Id, new AddCouncilMemberRequest { UserId = reviewer.Id, MemberRole = "Member", IsExternal = false });
+        var ch = await service.AddMemberAsync(council.Id, new AddCouncilMemberRequest { UserId = chair.Id, MemberRole = "Chair", IsExternal = false });
+        await service.AddMemberAsync(council.Id, new AddCouncilMemberRequest { UserId = secretary.Id, MemberRole = "Secretary", IsExternal = false });
+        db.ChangeTracker.Clear();
+
+        await service.SendInvitationsAsync(council.Id, DateTime.UtcNow.AddDays(5));
+        Assert.Equal(3, db.CouncilProjectInvitations.Count(i => i.ProjectId == a.Id && i.Status == "INVITED"));
+
+        // Nhận lời HỘI ĐỒNG ⇒ áp cho đề tài A đang chờ.
+        await service.RespondToMembershipAsync(rv.Id, reviewer.Id, accept: true, declineReason: null);
+        Assert.Equal("CONFIRMED", db.CouncilProjectInvitations.AsNoTracking().Single(i => i.CouncilMemberId == rv.Id).Status);
+
+        // Gán thêm B ⇒ mời riêng B, người đã nhận lời hội đồng cũng phải trả lời lại cho B.
+        await service.AssignProjectToCouncilAsync(council.Id, b.Id, acceptWithoutExpertise: true, expertiseNote: "thử");
+        Assert.Equal(3, db.CouncilProjectInvitations.Count(i => i.ProjectId == b.Id && i.Status == "INVITED"));
+        Assert.Contains(db.Notifications, n => n.UserId == reviewer.Id && n.NotificationType == "COUNCIL_PROJECT_INVITATION");
+
+        // Từ chối RIÊNG B (phải có lý do) — A và tư cách hội đồng giữ nguyên.
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.RespondToProjectAsync(rv.Id, b.Id, reviewer.Id, onBehalf: false, accept: false, declineReason: " "));
+        var declined = await service.RespondToProjectAsync(rv.Id, b.Id, reviewer.Id, onBehalf: false, accept: false, declineReason: "Trùng lịch");
+        Assert.Equal("DECLINED", declined.Status);
+        Assert.Equal("CONFIRMED", db.CouncilMembers.AsNoTracking().Single(m => m.Id == rv.Id).Status);
+        Assert.Equal("CONFIRMED", db.CouncilProjectInvitations.AsNoTracking().Single(i => i.CouncilMemberId == rv.Id && i.ProjectId == a.Id).Status);
+
+        // Nhận chấm một đề tài ⇒ cũng là nhận lời hội đồng.
+        await service.RespondToProjectAsync(ch.Id, b.Id, chair.Id, onBehalf: false, accept: true, declineReason: null);
+        Assert.Equal("CONFIRMED", db.CouncilMembers.AsNoTracking().Single(m => m.Id == ch.Id).Status);
+
+        var statusB = await service.GetProjectInvitationsAsync(council.Id, b.Id);
+        Assert.Equal(new[] { "CONFIRMED", "INVITED", "DECLINED" },
+            statusB.Select(x => x.Status).ToArray());   // Chủ tịch, Thư ký, Ủy viên
+        Assert.Equal("Trùng lịch", statusB.Single(x => x.MemberId == rv.Id).DeclineReason);
+
+        // Gỡ B khỏi hội đồng ⇒ lời mời của B biến mất.
+        await service.RemoveProjectFromCouncilAsync(council.Id, b.Id);
+        Assert.False(db.CouncilProjectInvitations.Any(i => i.ProjectId == b.Id));
+    }
+
     private static ReviewRound MakeRound(int cycleTrackId = 1) => new()
     {
         Id = Guid.NewGuid(), CycleTrackId = cycleTrackId, RoundNumber = 1, Sequence = 1,

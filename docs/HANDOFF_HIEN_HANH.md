@@ -217,6 +217,112 @@ Thầy góp ý: cán bộ phòng không có chuyên môn để cho Đạt/Không
   đã có kết luận; `StatusBadge` tô màu PASS/CONDITIONAL/FAIL.
 - **Số 0 đứng đầu** ("05"): sửa chung trong `components/ui/input.tsx` — xem chi tiết dưới.
 
+### 1.4u 🔴 Chỉ 2 loại đề tài CỐ ĐỊNH (BASIC / APPLIED) · lịch theo loại chỉ là mặc định (03/10, chiều) — luồng chính
+
+Deploy báo đề tài ứng dụng chỉ ra 1 kỳ tiến độ, và giải ngân lẫn lộn giữa hai loại. Gốc là "đề tài loại gì" được suy
+ở nhiều chỗ:
+- Cờ `RequireOrderingUnit` mà loại tạo tay trên deploy không tick.
+- Bảng mốc `disbursement_templates`.
+- Loại riêng của từng đề tài, không đổi theo đợt.
+- FE đoán từ số kỳ; phần gắn bộ tiêu chí coi mọi đợt là cơ bản.
+
+Sau 2 vòng bàn với nhóm, **chốt: hệ thống chỉ có 2 loại, phân loại = MÃ**.
+
+- **Loại đề tài:**
+  - `ResearchKind.IsApplied(code)` là nguồn duy nhất cho số kỳ tiến độ, lịch giải ngân mặc định, khoá đợt, lộ trình
+    và `cycle.isApplied`.
+  - API tạo / xoá / vô hiệu loại ⇒ 409. Sửa chỉ đổi tên và trần kinh phí (Điều 14.3), cờ gửi lên bị bỏ qua.
+  - Đợt chỉ chọn được 2 loại này. Đổi loại của đợt thì đề tài đổi theo; đợt đã có hợp đồng thì chặn.
+- **Khởi động (mọi môi trường, `EnsureFixedResearchTypesAsync`):**
+  - Tạo `APPLIED` và `BASIC` nếu thiếu; cờ `RequireOrderingUnit` giữ khớp mã (wizard còn đọc để hiện ô đơn đặt hàng).
+  - Loại tạo tay có tên "ứng dụng"/"cơ bản" ⇒ chuyển đợt, đề tài, định mức sang loại cố định rồi xoá loại cũ. Loại
+    cố định mới tạo lần đầu nhận luôn tên và trần kinh phí của loại cũ.
+  - Tên không rõ ⇒ để nguyên, ghi log.
+  - Đã thử trên Postgres local (loại giả "Nghiên cứu ứng dụng (cũ)" gắn với đợt D01 ⇒ gom về APPLIED; "Đề tài sinh
+    viên" giữ nguyên + log). DB local đã về như cũ.
+- **Lịch theo loại chỉ là MẶC ĐỊNH — chỉnh được cho cả 2 loại, mọi thao tác bắt lý do và ghi sổ quyết định:**
+  - **Giải ngân:**
+    - `PUT /api/contracts/{id}/disbursements/schedule` (`SaveScheduleAsync`): thêm / bớt / đổi thứ tự / sửa tỉ lệ
+      và điều kiện. Tổng đúng 100%.
+    - Đợt đã chi khoá vị trí và tỉ lệ. Đã lập quyết toán ⇒ chặn.
+    - Đánh số lại qua chỗ tạm vì unique (hợp đồng, số đợt).
+    - Đợt bị bỏ thì gỡ minh chứng theo.
+    - "Sinh lại lịch" đổi tên thành "Lập lại theo mẫu".
+  - **Tiến độ:**
+    - `POST /api/progress-reports/reset?contractId=` (`ResetToTemplateAsync`): chỉ khi mọi kỳ còn nháp.
+    - Sinh kỳ (theo mẫu hoặc tuỳ chỉnh) ghi `SCHEDULED`.
+    - Phòng QLKH xoá cả kỳ nháp cũng phải có lý do.
+  - **Khoá đợt:** đợt giữa thứ k chờ tiến độ kỳ k−1 Đạt. Đề tài ứng dụng luôn vậy; đề tài cơ bản chỉ khi kỳ đó có
+    trong lịch.
+- **FE:**
+  - Admin → Loại đề tài: chỉ 2 dòng, không có nút thêm / xoá; form khoá mã, chỉ sửa tên và trần.
+  - `ResearchKindBadge` ở đầu chi tiết hợp đồng.
+  - Tab Giải ngân: "Chỉnh lịch" (`DisbursementScheduleEditor`), "Lập lại theo mẫu", dòng nhắc khi lịch khác mẫu.
+  - Tab Báo cáo tiến độ: "Lập lại theo mẫu (n kỳ)"; xoá kỳ dùng `ReasonDialog`.
+  - Bộ tiêu chí đọc `cycle.isApplied`.
+- **Test:**
+  - BE 449/449. Có thêm:
+    - `ResearchKindTests` (loại cố định, đổi loại đợt).
+    - `SaveSchedule_*` và `ProgressSchedule_CustomThenResetToTemplate…`.
+    - Test lộ trình đổi mã thành BASIC.
+  - E2E API `kind_e2e.py`: HD-2026-002 ứng dụng / HĐ-2026-006 cơ bản, chặn tạo / xoá loại — đều đạt.
+- **Dữ liệu local đã đụng tới:**
+  - HĐ-2026-006: thử chỉnh lịch 40/60 rồi lập lại theo mẫu (đã gắn lại sản phẩm minh chứng), sổ quyết định có thêm 2
+    dòng.
+  - HD-2026-002: có 2 kỳ tiến độ nháp.
+- Ảnh: `anh_giao_dien_moi/93`–`95`, `97`–`102`; ảnh của phương án cũ nằm trong `_cu/`.
+- **Trên deploy sau khi deploy bản này:**
+  1. Khởi động lại backend, đọc log "Đã gom loại đề tài…".
+  2. Admin → Loại đề tài: chỉ còn 2 dòng.
+  3. Hợp đồng ứng dụng có dòng "Lịch đang có 1 đợt, khác mẫu 4 đợt…" ⇒ "Lập lại theo mẫu" (khi chưa chi đợt nào)
+     hoặc "Chỉnh lịch".
+  4. Tab tiến độ ⇒ "Lập lại theo mẫu (2 kỳ)" hoặc tạo thêm kỳ 2.
+
+### 1.4t Lời mời THEO TỪNG ĐỀ TÀI · "Tạo phiên" ra phiên mới · bỏ chọn sao chép hội đồng (03/10, chiều) — có migration
+
+Làm trên nhánh FE `hoi-dong-cham`, BE `dev` (dev đã fast-forward lên master tại máy, **chưa push**).
+
+- **Tạo phiên bị đổ vào phiên cũ:** `CreateRoundForTrackAsync` gọi `GetOrCreateOpenRoundAsync` ⇒ còn phiên cùng loại
+  đang mở là mọi đề tài bị thêm vào đó.
+  - Nay gọi `ReviewShared.CreateNewRoundAsync`, luôn tạo phiên mới.
+  - `ProjectsBusyInOtherOpenRoundAsync`: đề tài chưa chốt Đạt/Không đạt ở phiên cùng loại khác còn mở thì không kéo
+    sang phiên mới. Chọn đích danh toàn đề tài bận ⇒ 400. `AddProjectToRoundAsync` cũng chặn như vậy.
+  - FE `RoundProposalsPanel` nhận `allRounds` để không liệt kê các đề tài bận ở mục "Đã nộp, chưa vào phiên".
+- **Sao chép hội đồng:** ô chọn nay có giá trị điều khiển và mục "Không sao chép — tự chọn thành viên". Chọn mục này
+  thì về khung trống. Mỗi nguồn hiện kèm số thành viên.
+- **Lời mời theo từng đề tài:** trước đây chỉ có lời mời cấp hội đồng ⇒ đề tài gán thêm sau không hỏi ý thành viên,
+  và không biết ai nhận chấm đề tài nào.
+  - Bảng mới `council_project_invitations`, migration `AddCouncilProjectInvitations`; unique (member, project).
+  - Gửi thư mời tạo dòng INVITED cho mọi đề tài đã gán. Thành viên trả lời lời mời hội đồng thì áp luôn cho các dòng
+    đang INVITED.
+  - Gán thêm đề tài cho hội đồng đã gửi thư ⇒ tạo dòng INVITED và thông báo `COUNCIL_PROJECT_INVITATION`. Gỡ đề tài
+    thì xoá các dòng của đề tài đó.
+  - API mới:
+    - `GET /api/councils/{c}/projects/{p}/invitations` (Staff)
+    - `PATCH /api/council-members/{m}/projects/{p}/respond`
+    - `POST …/respond-on-behalf` (gate bằng setting `CouncilAllowRespondOnBehalf`)
+  - Từ chối phải có lý do và gửi thông báo cho Staff. Đã chấm đề tài đó rồi thì không đổi được câu trả lời.
+  - `SubmitScoreAsync` chặn chấm khi lời mời đề tài chưa CONFIRMED.
+  - Dữ liệu cũ không có dòng nào thì tính theo trạng thái cấp hội đồng.
+- **FE:**
+  - Chip "x/y nhận lời" cạnh ô chọn hội đồng của mỗi đề tài (`ProjectInviteStatus.tsx`). Bấm chip mở cửa sổ trạng
+    thái từng thành viên, có lý do từ chối và nút ghi nhận hộ.
+  - Màn "Quản lý" hội đồng bỏ badge trạng thái và nút ghi nhận hộ, chỉ còn gán và gỡ người.
+  - Trang Lời mời có thêm mục "Đề tài được giao thêm": nhận hoặc từ chối riêng từng đề tài, từ chối bắt buộc nhập lý do.
+  - `ReasonDialog` có thêm prop `hint` không bắt buộc.
+- Test BE 436/436. Ảnh: `anh_giao_dien_moi/84`–`90`.
+- Dữ liệu demo CB26/AI: đề tài "[TEST-LỜI MỜI 2 ĐỀ TÀI-B]" đã được gỡ rồi gán lại để có lời mời riêng. Hiện trạng: rv1 và
+  rv5 nhận, rv2 từ chối, rv3 và rv4 chờ.
+
+### 1.4s Bỏ tab "Lịch chấm" ở chi tiết hội đồng (03/10)
+
+- Tab chia khung giờ con cho từng đề tài trong buổi họp. Nó hiện lại mỗi khi hội đồng có ≥ 2 đề tài, và bắt mọi khung
+  nằm gọn trong buổi họp ⇒ Staff phải nhập lại giờ trùng lịch họp.
+- QĐ543 chỉ quy định họp hội đồng (Điều 8.3, 12.3), không có "lịch chấm" riêng ⇒ bỏ hẳn ở FE:
+  - Bỏ tab và cảnh báo quỹ giờ trong `CouncilDetailSheet`.
+  - Xoá `CouncilSlotsPanel`, `useCouncilSlots`, `council-slot.service`, `types/council-slot`.
+- BE giữ nguyên API slot (không màn nào bắt buộc dùng). Lịch họp vẫn đầy đủ ở tab "Lịch họp".
+
 ### 1.4r Nghiệm thu không dùng điểm, ký BM13 phải lưu trữ trước, khôi phục HĐ, hồ sơ chuyên môn, AI đọc CV, xuất BM02 (03/10, đêm)
 
 - **Biên bản phiên nghiệm thu (`MinutesPanel`):**

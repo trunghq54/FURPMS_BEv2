@@ -73,9 +73,9 @@ public class DatabaseSeeder
         await NormalizeContractClosureStatusesAsync();
         await SeedSystemFinancialConfigsAsync();
         await SeedSystemSettingsAsync();
+        await EnsureFixedResearchTypesAsync();
         await SeedDisbursementTemplatesAsync();
         await RemoveObsoleteSettingsAsync();
-        await FixAppliedOrderingUnitFlagAsync();
         await SeedRubricCriteriaAsync();
 
         // ── Chỉ môi trường phát triển ───────────────────────────────────────
@@ -1202,14 +1202,79 @@ public class DatabaseSeeder
         return order;
     }
 
-    // Rule #8: APPLIED phải có RequireOrderingUnit=true (đăng ký theo danh mục đặt hàng).
-    // DB cũ từng seed nhầm false — luôn rà và sửa (idempotent, chạy mỗi lần khởi động).
-    private async Task FixAppliedOrderingUnitFlagAsync()
+    /// <summary>
+    /// 03/10: hệ thống chỉ có 2 loại đề tài CỐ ĐỊNH — mã BASIC và APPLIED (xem <c>ResearchKind</c>). Chạy ở MỌI môi
+    /// trường, mỗi lần khởi động (idempotent):
+    /// <list type="number">
+    /// <item>Tạo 2 loại nếu chưa có (trước đây chỉ tạo ở Development ⇒ deploy dùng loại tạo tay).</item>
+    /// <item>Loại tạo tay cũ: tên nói rõ "ứng dụng"/"cơ bản" thì chuyển mọi đợt, đề tài, định mức của nó sang loại
+    ///       cố định tương ứng rồi xoá; loại mới tạo lần đầu nhận luôn tên + trần kinh phí đã cấu hình.</item>
+    /// <item>Tên không nói rõ ⇒ để nguyên, ghi log để Admin xử lý tay.</item>
+    /// </list>
+    /// Cờ <c>RequireOrderingUnit</c> giữ khớp mã (wizard nộp đề cương còn đọc để hiện ô đơn đặt hàng).
+    /// </summary>
+    private async Task EnsureFixedResearchTypesAsync()
     {
-        var applied = await _db.ResearchTypes.FirstOrDefaultAsync(x => x.Code == "APPLIED" && !x.RequireOrderingUnit);
-        if (applied == null) return;
-        applied.RequireOrderingUnit = true;
+        var all = await _db.ResearchTypes.ToListAsync();
+        var created = new HashSet<ResearchType>();
+
+        ResearchType Ensure(string code, string name, decimal cap, bool applied)
+        {
+            var type = all.FirstOrDefault(x => string.Equals(x.Code, code, StringComparison.OrdinalIgnoreCase));
+            if (type == null)
+            {
+                // QĐ543 Điều 14.1: cơ bản tối đa 100 triệu, ứng dụng/triển khai tối đa 150 triệu.
+                type = new ResearchType { Code = code, Name = name, MaxBudgetCap = cap, RequirePublication = applied };
+                _db.ResearchTypes.Add(type);
+                all.Add(type);
+                created.Add(type);
+            }
+            type.Code = code;
+            type.RequireOrderingUnit = applied;
+            type.IsActive = true;
+            return type;
+        }
+
+        var appliedType = Ensure(ResearchKind.Applied, "Nghiên cứu ứng dụng", 150_000_000m, true);
+        var basicType = Ensure(ResearchKind.Basic, "Nghiên cứu cơ bản", 100_000_000m, false);
         await _db.SaveChangesAsync();
+
+        foreach (var legacy in all.Where(x => !ResearchKind.IsFixedCode(x.Code)).ToList())
+        {
+            var kind = ResearchKind.KindFromName(legacy.Code, legacy.Name);
+            if (kind == null)
+            {
+                _log.LogWarning("Loại đề tài {Code} \"{Name}\" không thuộc 2 loại cố định và tên không nói rõ cơ bản hay " +
+                                "ứng dụng — chưa gom. Admin chuyển các đợt dùng loại này sang Cơ bản/Ứng dụng.",
+                    legacy.Code, legacy.Name);
+                continue;
+            }
+
+            var target = kind.Value ? appliedType : basicType;
+            if (created.Remove(target))
+            {
+                target.Name = legacy.Name;
+                target.MaxBudgetCap = legacy.MaxBudgetCap;
+            }
+
+            foreach (var c in await _db.ResearchCycles.IgnoreQueryFilters().Where(x => x.ResearchTypeId == legacy.Id).ToListAsync())
+                c.ResearchTypeId = target.Id;
+            foreach (var p in await _db.Projects.IgnoreQueryFilters().Where(x => x.ResearchTypeId == legacy.Id).ToListAsync())
+                p.ResearchTypeId = target.Id;
+            var rules = await _db.BudgetAllocationRules.Where(x => x.ResearchTypeId == legacy.Id).ToListAsync();
+            if (await _db.BudgetAllocationRules.AnyAsync(x => x.ResearchTypeId == target.Id))
+                _db.BudgetAllocationRules.RemoveRange(rules);
+            else
+                foreach (var r in rules) r.ResearchTypeId = target.Id;
+            _db.DisbursementTemplates.RemoveRange(
+                await _db.DisbursementTemplates.Where(x => x.ResearchTypeId == legacy.Id).ToListAsync());
+            _db.ResearchTypes.Remove(legacy);
+            await _db.SaveChangesAsync();
+
+            _log.LogWarning("Đã gom loại đề tài tạo tay {Code} \"{Name}\" vào loại cố định {Target}. Hợp đồng đã sinh lịch " +
+                            "theo loại cũ: vào tab Giải ngân / Báo cáo tiến độ bấm \"Lập lại theo mẫu\" nếu lịch sai.",
+                legacy.Code, legacy.Name, target.Code);
+        }
     }
 
     // ── Demo project + proposal v1 (idempotent via ProjectCode "DEMO-2026-001") ──

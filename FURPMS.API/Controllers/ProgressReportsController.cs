@@ -91,8 +91,20 @@ public class ProgressReportsController : ControllerBase
     [Authorize(Roles = "Admin,Staff")]
     public async Task<IActionResult> Generate([FromQuery] Guid contractId, [FromQuery] int? roundCount = null)
     {
-        var result = await _service.GenerateScheduledRoundsAsync(contractId, roundCount);
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var result = await _service.GenerateScheduledRoundsAsync(contractId, roundCount, userId);
         return Ok(ApiResponse<IEnumerable<ProgressReportSummaryDto>>.Ok(result, "Đã tạo các kỳ báo cáo định kỳ."));
+    }
+
+    // POST /api/progress-reports/reset?contractId={id} — xoá các kỳ nháp, lập lại theo mẫu của loại (kèm lý do).
+    [ProducesResponseType(typeof(ApiResponse<IEnumerable<ProgressReportSummaryDto>>), StatusCodes.Status200OK)]
+    [HttpPost("reset")]
+    [Authorize(Roles = "Admin,Staff")]
+    public async Task<IActionResult> Reset([FromQuery] Guid contractId, [FromBody] ReopenRequest request)
+    {
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var result = await _service.ResetToTemplateAsync(contractId, request.Reason, userId);
+        return Ok(ApiResponse<IEnumerable<ProgressReportSummaryDto>>.Ok(result, "Đã lập lại lịch báo cáo tiến độ."));
     }
 
     // POST /api/progress-reports?contractId={id}

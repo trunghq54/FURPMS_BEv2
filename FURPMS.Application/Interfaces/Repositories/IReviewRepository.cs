@@ -8,6 +8,9 @@ public interface IReviewRepository : IRepository<ReviewCouncil>
     IQueryable<ReviewRound> ReviewRounds { get; }
     IQueryable<ProjectRound> ProjectRounds { get; }
     IQueryable<CouncilProjectAssignment> ProjectAssignments { get; }
+    IQueryable<CouncilProjectInvitation> ProjectInvitations { get; }
+    Task AddProjectInvitationAsync(CouncilProjectInvitation invitation);
+    void RemoveProjectInvitationsRange(IEnumerable<CouncilProjectInvitation> invitations);
     IQueryable<CouncilDecision> Decisions { get; }
     IQueryable<ProposalReviewScore> ReviewScores { get; }
     IQueryable<ReviewScoreDetail> ReviewScoreDetails { get; }

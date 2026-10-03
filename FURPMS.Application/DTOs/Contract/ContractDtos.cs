@@ -19,6 +19,10 @@ public class ContractListResponse
     /// không suy từ mã loại vì mã "APPLIED" không đồng nghĩa có đặt hàng.
     /// </summary>
     public int DefaultProgressRounds { get; set; } = 1;
+    /// <summary>Đề tài ứng dụng (true) hay cơ bản — FE dùng trực tiếp, không suy từ số kỳ (03/10).</summary>
+    public bool IsApplied { get; set; }
+    /// <summary>Số đợt giải ngân đúng theo loại (QĐ543 Điều 16) — để FE báo khi lịch đã sinh bị lệch loại.</summary>
+    public int ExpectedDisbursementRounds { get; set; } = 1;
     public int CycleId { get; set; }
     public string? CycleCode { get; set; }
     public int TrackId { get; set; }
@@ -58,6 +62,10 @@ public class ContractDetailResponse
     /// không suy từ mã loại vì mã "APPLIED" không đồng nghĩa có đặt hàng.
     /// </summary>
     public int DefaultProgressRounds { get; set; } = 1;
+    /// <summary>Đề tài ứng dụng (true) hay cơ bản — FE dùng trực tiếp, không suy từ số kỳ (03/10).</summary>
+    public bool IsApplied { get; set; }
+    /// <summary>Số đợt giải ngân đúng theo loại (QĐ543 Điều 16) — để FE báo khi lịch đã sinh bị lệch loại.</summary>
+    public int ExpectedDisbursementRounds { get; set; } = 1;
     public int CycleId { get; set; }
     public string? CycleCode { get; set; }
     public int TrackId { get; set; }

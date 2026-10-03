@@ -195,6 +195,38 @@ public class CouncilsController : ControllerBase
         return Ok(ApiResponse.Ok("Đã gỡ đề tài khỏi hội đồng."));
     }
 
+    // GET /api/councils/{councilId}/projects/{projectId}/invitations — trạng thái nhận lời theo đề tài
+    [HttpGet("{councilId:guid}/projects/{projectId:guid}/invitations")]
+    [Authorize(Roles = "Staff,Admin")]
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<ProjectInvitationStatusDto>>>> GetProjectInvitations(
+        Guid councilId, Guid projectId)
+    {
+        var result = await _service.GetProjectInvitationsAsync(councilId, projectId);
+        return Ok(ApiResponse<IReadOnlyList<ProjectInvitationStatusDto>>.Ok(result));
+    }
+
+    // PATCH /api/council-members/{memberId}/projects/{projectId}/respond — thành viên trả lời riêng một đề tài
+    [HttpPatch("/api/council-members/{memberId:guid}/projects/{projectId:guid}/respond")]
+    public async Task<ActionResult<ApiResponse<ProjectInvitationStatusDto>>> RespondProject(
+        Guid memberId, Guid projectId, [FromBody] RespondMembershipRequest request)
+    {
+        var result = await _service.RespondToProjectAsync(
+            memberId, projectId, GetCurrentUserId(), onBehalf: false, request.Accept, request.DeclineReason);
+        return Ok(ApiResponse<ProjectInvitationStatusDto>.Ok(result));
+    }
+
+    // POST /api/council-members/{memberId}/projects/{projectId}/respond-on-behalf — Phòng QLKH ghi nhận hộ
+    [HttpPost("/api/council-members/{memberId:guid}/projects/{projectId:guid}/respond-on-behalf")]
+    [Authorize(Roles = "Staff,Admin")]
+    public async Task<ActionResult<ApiResponse<ProjectInvitationStatusDto>>> RespondProjectOnBehalf(
+        Guid memberId, Guid projectId, [FromBody] RespondMembershipRequest request)
+    {
+        var result = await _service.RespondToProjectAsync(
+            memberId, projectId, GetCurrentUserId(), onBehalf: true, request.Accept, request.DeclineReason);
+        return Ok(ApiResponse<ProjectInvitationStatusDto>.Ok(result,
+            request.Accept ? "Đã ghi nhận nhận chấm đề tài." : "Đã ghi nhận từ chối chấm đề tài."));
+    }
+
     // PATCH /api/council-members/{memberId}/respond
     [HttpPatch("/api/council-members/{memberId:guid}/respond")]
     public async Task<ActionResult<ApiResponse<CouncilMemberResponse>>> Respond(

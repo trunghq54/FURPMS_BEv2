@@ -93,4 +93,6 @@ public class ReviewBoardCouncilDto
     public bool IsMeetingDeadlineDerived { get; set; }
     public List<Guid> ProjectIds { get; set; } = new();
     public IList<CouncilMemberResponse> Members { get; set; } = new List<CouncilMemberResponse>();
+    /// <summary>Nhận lời theo TỪNG đề tài của hội đồng (03/10).</summary>
+    public List<FURPMS.Application.DTOs.Councils.ProjectInviteSummaryDto> ProjectInvites { get; set; } = new();
 }

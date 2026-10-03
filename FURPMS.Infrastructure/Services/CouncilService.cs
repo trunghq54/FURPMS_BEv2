@@ -440,6 +440,12 @@ public class CouncilService : ICouncilService
             m.Status = CouncilMemberStatus.Invited;
         }
 
+        // Lời mời theo TỪNG đề tài (03/10). Người vừa được mời: chờ trả lời. Người đã xác nhận hội đồng từ
+        // trước mà chưa có dòng (dữ liệu trước 03/10): coi như đã nhận các đề tài đang có.
+        await EnsureProjectInvitationsAsync(council.Id,
+            council.Members.Where(m => m.Status != CouncilMemberStatus.Declined && m.InvitationSentAt != null),
+            council.ProjectAssignments.Select(a => a.ProjectId));
+
         await _review.SaveChangesAsync();
 
         // Báo cho người được mời — trước đây nút "Gửi thư mời" chỉ đổi trạng thái trong DB,
@@ -487,6 +493,173 @@ public class CouncilService : ICouncilService
         return pending.Count;
     }
 
+    /// <summary>
+    /// Tạo dòng lời mời theo đề tài còn thiếu cho các thành viên đã được gửi thư mời. Trạng thái khởi đầu:
+    /// thành viên đã xác nhận hội đồng ⇒ CONFIRMED (dữ liệu cũ, đề tài đã có từ lúc họ nhận lời);
+    /// còn lại ⇒ INVITED. Không SaveChanges — caller lo lưu.
+    /// </summary>
+    private async Task EnsureProjectInvitationsAsync(Guid councilId, IEnumerable<CouncilMember> members, IEnumerable<Guid> projectIds)
+    {
+        var memberList = members.ToList();
+        var projects = projectIds.Distinct().ToList();
+        if (memberList.Count == 0 || projects.Count == 0) return;
+        var memberIds = memberList.Select(m => m.Id).ToList();
+        var existing = (await _review.ProjectInvitations
+                .Where(i => memberIds.Contains(i.CouncilMemberId) && projects.Contains(i.ProjectId))
+                .Select(i => new { i.CouncilMemberId, i.ProjectId })
+                .ToListAsync())
+            .Select(x => (x.CouncilMemberId, x.ProjectId))
+            .ToHashSet();
+        foreach (var m in memberList)
+        foreach (var pid in projects)
+        {
+            if (existing.Contains((m.Id, pid))) continue;
+            var confirmed = m.Status == CouncilMemberStatus.Confirmed;
+            await _review.AddProjectInvitationAsync(new CouncilProjectInvitation
+            {
+                CouncilMemberId = m.Id,
+                CouncilId = councilId,
+                ProjectId = pid,
+                Status = confirmed ? CouncilMemberStatus.Confirmed : CouncilMemberStatus.Invited,
+                InvitedAt = DateTime.UtcNow,
+                RespondedAt = confirmed ? m.ConfirmedAt ?? DateTime.UtcNow : null,
+            });
+        }
+    }
+
+    /// <summary>Trả lời lời mời HỘI ĐỒNG ⇒ áp luôn cho các đề tài đang chờ của thành viên đó.</summary>
+    private async Task ApplyCouncilResponseToProjectsAsync(CouncilMember member, bool accept, string? reason, Guid? onBehalfBy)
+    {
+        var invites = await _review.ProjectInvitations
+            .Where(i => i.CouncilMemberId == member.Id && i.Status == CouncilMemberStatus.Invited)
+            .ToListAsync();
+        foreach (var i in invites)
+        {
+            i.Status = accept ? CouncilMemberStatus.Confirmed : CouncilMemberStatus.Declined;
+            i.RespondedAt = DateTime.UtcNow;
+            i.DeclineReason = accept ? null : reason;
+            i.RespondedOnBehalfBy = onBehalfBy;
+        }
+    }
+
+    public async Task<IReadOnlyList<ProjectInvitationStatusDto>> GetProjectInvitationsAsync(Guid councilId, Guid projectId)
+    {
+        var members = await _review.CouncilMembers
+            .Where(m => m.CouncilId == councilId)
+            .Include(m => m.User)
+            .ToListAsync();
+        var invites = await _review.ProjectInvitations
+            .Where(i => i.CouncilId == councilId && i.ProjectId == projectId)
+            .ToListAsync();
+        return members
+            .OrderBy(m => m.MemberRole switch { "Chair" => 0, "Secretary" => 1, "Opponent" => 2, _ => 3 })
+            .Select(m => ToInvitationStatus(m, invites.FirstOrDefault(i => i.CouncilMemberId == m.Id)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Trạng thái hiển thị: có dòng theo đề tài thì dùng dòng đó; chưa có thì suy từ cấp hội đồng (chưa gửi
+    /// thư ⇒ NOT_SENT; đã từ chối hội đồng ⇒ DECLINED; còn lại theo trạng thái hội đồng).
+    /// </summary>
+    private static ProjectInvitationStatusDto ToInvitationStatus(CouncilMember m, CouncilProjectInvitation? i) => new()
+    {
+        MemberId = m.Id,
+        UserId = m.UserId,
+        FullName = m.User?.FullName,
+        MemberRole = m.MemberRole,
+        Status = i?.Status ?? (m.InvitationSentAt == null ? "NOT_SENT"
+            : m.Status == CouncilMemberStatus.Declined ? CouncilMemberStatus.Declined
+            : m.Status == CouncilMemberStatus.Confirmed ? CouncilMemberStatus.Confirmed
+            : CouncilMemberStatus.Invited),
+        // Đã có lời mời riêng đề tài thì chỉ đọc dòng đó — không mượn ngày/lý do của lời mời cấp hội đồng
+        // (thành viên nhận lời hội đồng từ trước nhưng chưa trả lời đề tài mới sẽ hiện sai ngày trả lời).
+        RespondedAt = i != null ? i.RespondedAt
+            : m.Status == CouncilMemberStatus.Confirmed ? m.ConfirmedAt
+            : m.Status == CouncilMemberStatus.Declined ? m.DeclinedAt : null,
+        DeclineReason = i != null ? i.DeclineReason
+            : m.Status == CouncilMemberStatus.Declined ? m.DeclineReason : null,
+        RespondedOnBehalf = (i != null ? i.RespondedOnBehalfBy : m.RespondedOnBehalfBy) != null,
+    };
+
+    /// <summary>
+    /// Trả lời lời mời chấm MỘT đề tài (03/10). Nhận lời một đề tài ⇒ cũng là nhận lời hội đồng (đổi trạng
+    /// thái hội đồng sang Đã xác nhận nếu đang chờ). Từ chối một đề tài ⇒ chỉ đề tài đó, vẫn là thành viên
+    /// hội đồng cho các đề tài khác; Phòng QLKH được báo để tìm người chấm thay.
+    /// </summary>
+    public async Task<ProjectInvitationStatusDto> RespondToProjectAsync(
+        Guid memberId, Guid projectId, Guid actingUserId, bool onBehalf, bool accept, string? declineReason)
+    {
+        var member = await _review.CouncilMembers
+            .Include(m => m.User)
+            .FirstOrDefaultAsync(m => m.Id == memberId)
+            ?? throw new KeyNotFoundException("Không tìm thấy thành viên hội đồng.");
+
+        if (onBehalf)
+        {
+            var allowed = await _settings.GetBoolAsync(
+                SystemSettingKeys.CouncilAllowRespondOnBehalf, SystemSettingKeys.DefaultCouncilAllowRespondOnBehalf);
+            if (!allowed)
+                throw AppException.Forbidden(ErrorCodes.Forbidden,
+                    "Cấu hình hệ thống đang yêu cầu thành viên TỰ trả lời thư mời. " +
+                    "Quản trị viên có thể bật lại ở Cài đặt nếu cần ghi nhận hộ.");
+        }
+        else if (member.UserId != actingUserId)
+            throw new ForbiddenException("Bạn chỉ trả lời được thư mời gửi cho chính mình.");
+
+        if (member.InvitationSentAt == null)
+            throw new InvalidOperationException("Chưa gửi thư mời cho thành viên này — gửi thư mời trước.");
+        if (member.Status == CouncilMemberStatus.Declined)
+            throw new InvalidOperationException("Thành viên đã từ chối tham gia hội đồng — không trả lời riêng từng đề tài được.");
+        if (!accept && string.IsNullOrWhiteSpace(declineReason))
+            throw new ArgumentException("Từ chối chấm đề tài phải ghi lý do để Phòng QLKH tìm người thay.");
+
+        var assigned = await _review.ProjectAssignments
+            .AnyAsync(a => a.CouncilId == member.CouncilId && a.ProjectId == projectId);
+        if (!assigned)
+            throw new ArgumentException("Đề tài không thuộc hội đồng này.");
+        if (await _review.ReviewScores.AnyAsync(s => s.EvaluatorMemberId == member.Id && s.ProjectId == projectId))
+            throw new InvalidOperationException("Đã nộp phiếu chấm đề tài này — không đổi trả lời được nữa.");
+
+        var invite = await _review.ProjectInvitations
+            .FirstOrDefaultAsync(i => i.CouncilMemberId == member.Id && i.ProjectId == projectId);
+        if (invite == null)
+        {
+            invite = new CouncilProjectInvitation
+            {
+                CouncilMemberId = member.Id, CouncilId = member.CouncilId, ProjectId = projectId,
+                InvitedAt = member.InvitationSentAt ?? DateTime.UtcNow
+            };
+            await _review.AddProjectInvitationAsync(invite);
+        }
+        invite.Status = accept ? CouncilMemberStatus.Confirmed : CouncilMemberStatus.Declined;
+        invite.RespondedAt = DateTime.UtcNow;
+        invite.DeclineReason = accept ? null : declineReason!.Trim();
+        invite.RespondedOnBehalfBy = onBehalf ? actingUserId : null;
+
+        if (accept && member.Status != CouncilMemberStatus.Confirmed)
+        {
+            member.Status = CouncilMemberStatus.Confirmed;
+            member.ConfirmedAt = DateTime.UtcNow;
+            if (onBehalf) member.RespondedOnBehalfBy = actingUserId;
+        }
+        await _review.SaveChangesAsync();
+
+        if (!accept && _notifier is not null)
+        {
+            var title = await _proposals.Projects.IgnoreQueryFilters()
+                .Where(p => p.Id == projectId).Select(p => p.TitleVi).FirstOrDefaultAsync();
+            await _notifier.NotifyRoleAsync("Staff", "COUNCIL_PROJECT_DECLINED",
+                $"{member.User?.FullName ?? "Một thành viên"} từ chối chấm một đề tài",
+                $"{member.User?.FullName ?? "Thành viên"} ({RoleVi(member.MemberRole)}) không nhận chấm đề tài \"{title}\" — " +
+                $"lý do: {declineReason!.Trim()}. Cần sắp xếp người chấm thay cho đề tài này.",
+                actionUrl: "/review-board",
+                entityType: "ReviewCouncil", entityId: member.CouncilId.ToString(),
+                priority: "HIGH");
+        }
+
+        return ToInvitationStatus(member, invite);
+    }
+
     public async Task<IEnumerable<MyMembershipDto>> GetMyMembershipsAsync(Guid userId)
     {
         var memberships = await _review.CouncilMembers
@@ -515,6 +688,11 @@ public class CouncilService : ICouncilService
                         .ThenInclude(p => p.Proposals.Where(x => x.IsCurrent))
             .ToListAsync();
 
+        var memberIds = memberships.Select(m => m.Id).ToList();
+        var projectInvites = await _review.ProjectInvitations
+            .Where(i => memberIds.Contains(i.CouncilMemberId))
+            .ToListAsync();
+
         return memberships.SelectMany(m =>
         {
             // Một lời mời thuộc HỘI ĐỒNG, nhưng công việc chấm thuộc từng ĐỀ TÀI. Trả một dòng cho mỗi
@@ -525,7 +703,14 @@ public class CouncilService : ICouncilService
             if (assignments.Count == 0)
                 return new[] { MapMembership(m, null) };
 
-            return assignments.Select(a => MapMembership(m, a.Project));
+            return assignments.Select(a =>
+            {
+                var dto = MapMembership(m, a.Project);
+                var inv = projectInvites.FirstOrDefault(i => i.CouncilMemberId == m.Id && i.ProjectId == a.ProjectId);
+                dto.ProjectInviteStatus = inv?.Status;
+                dto.ProjectDeclineReason = inv?.DeclineReason;
+                return dto;
+            });
         });
     }
 
@@ -590,6 +775,7 @@ public class CouncilService : ICouncilService
             member.DeclinedAt = DateTime.UtcNow;
             member.DeclineReason = declineReason;
         }
+        await ApplyCouncilResponseToProjectsAsync(member, accept, declineReason, null);
 
         await _review.SaveChangesAsync();
 
@@ -664,6 +850,7 @@ public class CouncilService : ICouncilService
         // Ghi lại AI đã bấm hộ. Không có dòng này thì về sau không phân biệt được thành viên thật
         // sự đồng ý hay chuyên viên bấm thay.
         member.RespondedOnBehalfBy = staffUserId;
+        await ApplyCouncilResponseToProjectsAsync(member, accept, declineReason, staffUserId);
         await _review.SaveChangesAsync();
         return MapMember(member);
     }
@@ -781,7 +968,60 @@ public class CouncilService : ICouncilService
         if (!already)
             await _review.AddProjectAssignmentAsync(new CouncilProjectAssignment { CouncilId = councilId, ProjectId = projectId });
 
+        // Chuyển đề tài khỏi hội đồng khác ⇒ bỏ lời mời theo đề tài ở đó.
+        if (otherCouncilIds.Count > 0)
+        {
+            var staleInvites = await _review.ProjectInvitations
+                .Where(i => i.ProjectId == projectId && otherCouncilIds.Contains(i.CouncilId))
+                .ToListAsync();
+            if (staleInvites.Count > 0) _review.RemoveProjectInvitationsRange(staleInvites);
+        }
+
+        // Hội đồng ĐÃ gửi thư mời mà được gán thêm đề tài ⇒ mời riêng đề tài này (03/10). Trước đây người đã
+        // nhận lời hội đồng không được hỏi lại — nhận lời 1 đề tài thành ra "nhận" luôn mọi đề tài gán sau.
+        var invitedMembers = council.Members
+            .Where(m => m.InvitationSentAt != null && m.Status != CouncilMemberStatus.Declined)
+            .ToList();
+        var newlyInvited = new List<CouncilMember>();
+        if (!already && invitedMembers.Count > 0)
+        {
+            var hasRows = (await _review.ProjectInvitations
+                    .Where(i => i.CouncilId == councilId && i.ProjectId == projectId)
+                    .Select(i => i.CouncilMemberId)
+                    .ToListAsync())
+                .ToHashSet();
+            foreach (var m in invitedMembers.Where(m => !hasRows.Contains(m.Id)))
+            {
+                await _review.AddProjectInvitationAsync(new CouncilProjectInvitation
+                {
+                    CouncilMemberId = m.Id, CouncilId = councilId, ProjectId = projectId,
+                    Status = CouncilMemberStatus.Invited, InvitedAt = DateTime.UtcNow
+                });
+                newlyInvited.Add(m);
+            }
+        }
+
         await _review.SaveChangesAsync();
+
+        if (newlyInvited.Count > 0)
+        {
+            var title = await _proposals.Projects.IgnoreQueryFilters()
+                .Where(p => p.Id == projectId).Select(p => p.TitleVi).FirstOrDefaultAsync();
+            foreach (var m in newlyInvited)
+                await _notifications.AddAsync(new Notification
+                {
+                    UserId = m.UserId,
+                    NotificationType = "COUNCIL_PROJECT_INVITATION",
+                    Title = "Hội đồng được giao thêm đề tài — mời bạn xác nhận",
+                    Body = $"Hội đồng bạn tham gia được giao thêm đề tài \"{title}\". " +
+                           "Vào mục Lời mời để nhận chấm hoặc từ chối riêng đề tài này.",
+                    ActionUrl = "/invitations",
+                    RelatedEntityType = "ReviewCouncil",
+                    RelatedEntityId = councilId.ToString(),
+                    Priority = "HIGH"
+                });
+            await _notifications.SaveChangesAsync();
+        }
     }
 
     public async Task RemoveProjectFromCouncilAsync(Guid councilId, Guid projectId)
@@ -795,6 +1035,10 @@ public class CouncilService : ICouncilService
             throw new InvalidOperationException("Đề tài đã được chấm ở hội đồng này — không thể gỡ.");
 
         _review.RemoveProjectAssignmentsRange(new[] { assignment });
+        var invites = await _review.ProjectInvitations
+            .Where(i => i.CouncilId == councilId && i.ProjectId == projectId)
+            .ToListAsync();
+        if (invites.Count > 0) _review.RemoveProjectInvitationsRange(invites);
         await _review.SaveChangesAsync();
     }
 

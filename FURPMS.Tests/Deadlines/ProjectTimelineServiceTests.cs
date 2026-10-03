@@ -327,6 +327,7 @@ public class ProjectTimelineServiceTests
         var db = TestDbContextFactory.Create($"test-{Guid.NewGuid()}");
         var (project, piId, _, _) = await SeedProjectAsync(db, Today.AddDays(30));
         project.Status = ProjectStatus.UnderReview;
+        db.ResearchTypes.Single().Code = "BASIC";   // phân loại theo MÃ cố định (03/10)
         await db.SaveChangesAsync();
 
         var dto = await MakeSvc(db, ClockAtToday()).GetAsync(project.Id, piId, Array.Empty<string>());

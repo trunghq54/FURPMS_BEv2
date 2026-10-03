@@ -12,6 +12,9 @@ public class ReviewRepository : Repository<ReviewCouncil>, IReviewRepository
     public IQueryable<ReviewRound> ReviewRounds => _db.ReviewRounds;
     public IQueryable<ProjectRound> ProjectRounds => _db.ProjectRounds;
     public IQueryable<CouncilProjectAssignment> ProjectAssignments => _db.CouncilProjectAssignments;
+    public IQueryable<CouncilProjectInvitation> ProjectInvitations => _db.CouncilProjectInvitations;
+    public async Task AddProjectInvitationAsync(CouncilProjectInvitation invitation) => await _db.CouncilProjectInvitations.AddAsync(invitation);
+    public void RemoveProjectInvitationsRange(IEnumerable<CouncilProjectInvitation> invitations) => _db.CouncilProjectInvitations.RemoveRange(invitations);
     public IQueryable<CouncilDecision> Decisions => _db.CouncilDecisions;
     public IQueryable<ProposalReviewScore> ReviewScores => _db.ProposalReviewScores;
     public IQueryable<ReviewScoreDetail> ReviewScoreDetails => _db.ReviewScoreDetails;

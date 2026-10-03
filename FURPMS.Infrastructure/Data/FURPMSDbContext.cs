@@ -68,6 +68,7 @@ public class FURPMSDbContext : DbContext
     public DbSet<ReviewCouncil> ReviewCouncils => Set<ReviewCouncil>();
     public DbSet<CouncilProjectAssignment> CouncilProjectAssignments => Set<CouncilProjectAssignment>();
     public DbSet<CouncilMember> CouncilMembers => Set<CouncilMember>();
+    public DbSet<CouncilProjectInvitation> CouncilProjectInvitations => Set<CouncilProjectInvitation>();
     public DbSet<CouncilMeeting> CouncilMeetings => Set<CouncilMeeting>();
     public DbSet<MeetingAttendance> MeetingAttendances => Set<MeetingAttendance>();
     public DbSet<ProposalReviewScore> ProposalReviewScores => Set<ProposalReviewScore>();
@@ -572,6 +573,18 @@ public class FURPMSDbContext : DbContext
             b.HasOne(o => o.Decision)
                 .WithMany(cd => cd.MemberOpinions)
                 .HasForeignKey(o => o.DecisionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // ── Lời mời theo đề tài (03/10): một dòng / thành viên × đề tài; xoá thành viên là xoá theo ──
+        modelBuilder.Entity<CouncilProjectInvitation>(b =>
+        {
+            b.HasIndex(i => new { i.CouncilMemberId, i.ProjectId }).IsUnique();
+            b.HasIndex(i => new { i.CouncilId, i.ProjectId });
+            b.Property(i => i.Status).HasMaxLength(20);
+            b.HasOne(i => i.Member)
+                .WithMany()
+                .HasForeignKey(i => i.CouncilMemberId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

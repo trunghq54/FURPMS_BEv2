@@ -103,6 +103,10 @@ public class ReviewBoardService : IReviewBoardService
             .ToListAsync();
 
         var councilsByRound = councils.GroupBy(c => c.RoundId!.Value).ToDictionary(g => g.Key, g => g.ToList());
+        var councilIdsAll = councils.Select(c => c.Id).ToList();
+        var projectInvites = await _review.ProjectInvitations
+            .Where(i => councilIdsAll.Contains(i.CouncilId))
+            .ToListAsync();
 
         // Hạn hiệu lực (đã tính gia hạn) cho MỌI vòng có đặt hạn — một truy vấn cho cả track,
         // tránh N+1. Trước 27/08 màn "Hội đồng & Chấm" hoàn toàn không hiện hạn chấm, dù luật đã
@@ -173,7 +177,10 @@ public class ReviewBoardService : IReviewBoardService
                         ?.ToString("yyyy-MM-dd"),
                     IsMeetingDeadlineDerived = c.MeetingDeadline is null && c.EstablishedAt is not null,
                     ProjectIds = c.ProjectAssignments.Select(a => a.ProjectId).ToList(),
-                    Members = c.Members.Select(MapMember).ToList()
+                    Members = c.Members.Select(MapMember).ToList(),
+                    ProjectInvites = c.ProjectAssignments
+                        .Select(a => SummarizeProjectInvites(c, a.ProjectId, projectInvites))
+                        .ToList()
                 }).ToList()
             };
         }).ToList();
@@ -183,6 +190,29 @@ public class ReviewBoardService : IReviewBoardService
             Projects = trackProposals,   // đã là List<ReviewBoardProjectDto> từ projection ở trên
             Rounds = boardRounds
         };
+    }
+
+    /// <summary>
+    /// Đếm nhận lời của hội đồng với MỘT đề tài (03/10). Thành viên chưa có dòng lời mời theo đề tài thì suy
+    /// từ trạng thái hội đồng — cùng luật với CouncilService.ToInvitationStatus.
+    /// </summary>
+    private static FURPMS.Application.DTOs.Councils.ProjectInviteSummaryDto SummarizeProjectInvites(
+        ReviewCouncil c, Guid projectId, List<CouncilProjectInvitation> invites)
+    {
+        var dto = new FURPMS.Application.DTOs.Councils.ProjectInviteSummaryDto { ProjectId = projectId, Total = c.Members.Count };
+        foreach (var m in c.Members)
+        {
+            var status = invites.FirstOrDefault(i => i.CouncilMemberId == m.Id && i.ProjectId == projectId)?.Status
+                ?? (m.InvitationSentAt == null ? "NOT_SENT" : m.Status);
+            switch (status)
+            {
+                case CouncilMemberStatus.Confirmed: dto.Confirmed++; break;
+                case CouncilMemberStatus.Declined: dto.Declined++; break;
+                case "NOT_SENT": dto.NotSent++; break;
+                default: dto.Pending++; break;
+            }
+        }
+        return dto;
     }
 
     /// <summary>
@@ -230,9 +260,17 @@ public class ReviewBoardService : IReviewBoardService
                 throw new ArgumentException("Vòng tiên quyết không thuộc lĩnh vực này.");
         }
 
-        // DÙNG CHUNG round theo track (helper chung với ReviewRoundService).
-        var round = await ReviewShared.GetOrCreateOpenRoundAsync(
+        // "Tạo phiên" = LUÔN ra phiên mới (03/10). Trước đây dùng GetOrCreateOpenRoundAsync nên còn phiên
+        // cùng loại đang mở là mọi đề tài bị thêm vào phiên cũ — Staff bấm tạo phiên 2 mà không có phiên 2.
+        var round = await ReviewShared.CreateNewRoundAsync(
             _review, cycleTrack.Id, request.Dimension, request.RoundType, request.RubricTemplateId, request.PrerequisiteRoundId);
+        // Đề tài đang chấm dở ở phiên cùng loại khác thì để nguyên ở đó (đề tài "Cần chỉnh sửa" chấm lại trong
+        // chính phiên cũ) — không kéo sang phiên mới, tránh một đề tài nằm ở hai phiên đang chấm.
+        var busy = await ReviewShared.ProjectsBusyInOtherOpenRoundAsync(_review, cycleTrack.Id, request.RoundType, round.Id);
+        if (request.ProjectIds is { Count: > 0 } && request.ProjectIds.All(busy.Contains))
+            throw new InvalidOperationException(
+                "Các đề tài đã chọn đang được chấm ở một phiên cùng loại khác chưa đóng — gỡ khỏi phiên đó trước " +
+                "hoặc chấm tiếp trong phiên đó.");
 
         // Tập đề tài đưa vào vòng: REVIEW gom hồ sơ đang chờ xét; ACCEPTANCE chỉ gom hồ sơ đã qua REVIEW,
         // đã nộp báo cáo tổng kết và được Staff duyệt. Dùng chung query cho cả mặc định lẫn danh sách chỉ định
@@ -289,7 +327,7 @@ public class ReviewBoardService : IReviewBoardService
 
         foreach (var projectId in targetProjectIds.Distinct())
         {
-            if (alreadyLinked.Contains(projectId)) continue;
+            if (alreadyLinked.Contains(projectId) || busy.Contains(projectId)) continue;
 
             // Bỏ qua (không fail cả batch) đề tài chưa ĐẠT vòng tiên quyết.
             if (prereqPassed != null && !prereqPassed.Contains(projectId)) continue;
@@ -350,6 +388,11 @@ public class ReviewBoardService : IReviewBoardService
             .AnyAsync(pr => pr.ProjectId == projectId && pr.RoundId == roundId);
         if (existingLink)
             throw new InvalidOperationException("Đề tài đã tham gia vòng chấm này rồi.");
+
+        var busy = await ReviewShared.ProjectsBusyInOtherOpenRoundAsync(_review, round.CycleTrackId, round.RoundType, round.Id);
+        if (busy.Contains(projectId))
+            throw new InvalidOperationException(
+                "Đề tài đang được chấm ở một phiên cùng loại khác chưa đóng — gỡ khỏi phiên đó trước rồi mới đưa sang phiên này.");
 
         // Vòng nào có vòng tiên quyết thì đề tài phải ĐẠT vòng đó mới được vào.
         // Trước đây điều kiện là `Dimension == FINANCE`, mà FINANCE đã bỏ theo rule #16 ⇒ nhánh này

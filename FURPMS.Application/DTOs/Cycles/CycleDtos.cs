@@ -31,6 +31,11 @@ public class ResearchTypeDto
     public decimal MaxBudgetCap { get; set; }
     public bool RequireOrderingUnit { get; set; }
     public bool IsActive { get; set; }
+    /// <summary>BASIC / APPLIED — chính là mã cố định của loại.</summary>
+    public string Kind { get; set; } = Constants.ResearchKind.Basic;
+    /// <summary>Số kỳ tiến độ / số đợt giải ngân MẶC ĐỊNH theo QĐ543 (chỉnh được ở từng hợp đồng).</summary>
+    public int ProgressRounds { get; set; }
+    public int DisbursementRounds { get; set; }
 }
 
 public class CreateResearchTypeRequest
@@ -56,6 +61,9 @@ public class CycleDto
     public string Status { get; set; } = null!;
     public int ResearchTypeId { get; set; }
     public string ResearchTypeName { get; set; } = null!;
+    /// <summary>Phân loại của đợt (BASIC/APPLIED) — theo loại đề tài; FE không phải tự tra cờ.</summary>
+    public string ResearchKind { get; set; } = Constants.ResearchKind.Basic;
+    public bool IsApplied { get; set; }
     public string SubmissionStartDate { get; set; } = null!;
     public string SubmissionDeadline { get; set; } = null!;   // HẠN HIỆU LỰC (sau gia hạn nếu có)
     public string? OriginalDeadline { get; set; }              // hạn gốc — chỉ set khi đã gia hạn

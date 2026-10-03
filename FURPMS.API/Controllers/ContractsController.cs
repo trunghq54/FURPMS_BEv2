@@ -157,6 +157,17 @@ public class ContractsController : ControllerBase
         return Ok(ApiResponse<IEnumerable<DisbursementResponse>>.Ok(result, "Đã sinh lại lịch giải ngân."));
     }
 
+    // Chỉnh cả lịch giải ngân (thêm / bớt / sửa từng đợt) — tổng 100%, đợt đã chi giữ nguyên, kèm lý do.
+    [ProducesResponseType(typeof(ApiResponse<IEnumerable<DisbursementResponse>>), StatusCodes.Status200OK)]
+    [HttpPut("{contractId:guid}/disbursements/schedule")]
+    [Authorize(Roles = "Admin,Staff")]
+    public async Task<IActionResult> SaveDisbursementSchedule(Guid contractId, [FromBody] SaveDisbursementScheduleRequest request)
+    {
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var result = await _disbursements.SaveScheduleAsync(contractId, request, userId);
+        return Ok(ApiResponse<IEnumerable<DisbursementResponse>>.Ok(result, "Đã lưu lịch giải ngân."));
+    }
+
     // ── Deliverables ──────────────────────────────────────────────────────────
 
     [ProducesResponseType(typeof(ApiResponse<IEnumerable<DeliverableResponse>>), StatusCodes.Status200OK)]

@@ -3114,6 +3114,62 @@ namespace FURPMS.Infrastructure.Migrations
                     b.ToTable("council_project_assignments", (string)null);
                 });
 
+            modelBuilder.Entity("FURPMS.Domain.Entities.Review.CouncilProjectInvitation", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<Guid>("CouncilId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("council_id");
+
+                    b.Property<Guid>("CouncilMemberId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("council_member_id");
+
+                    b.Property<string>("DeclineReason")
+                        .HasColumnType("text")
+                        .HasColumnName("decline_reason");
+
+                    b.Property<DateTime>("InvitedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("invited_at");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("project_id");
+
+                    b.Property<DateTime?>("RespondedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("responded_at");
+
+                    b.Property<Guid?>("RespondedOnBehalfBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("responded_on_behalf_by");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id")
+                        .HasName("pk_council_project_invitations");
+
+                    b.HasIndex("CouncilId", "ProjectId")
+                        .HasDatabaseName("ix_council_project_invitations_council_id_project_id");
+
+                    b.HasIndex("CouncilMemberId", "ProjectId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_council_project_invitations_council_member_id_project_id");
+
+                    b.ToTable("council_project_invitations", (string)null);
+                });
+
             modelBuilder.Entity("FURPMS.Domain.Entities.Review.CouncilQaEntry", b =>
                 {
                     b.Property<int>("Id")
@@ -4852,6 +4908,18 @@ namespace FURPMS.Infrastructure.Migrations
                     b.Navigation("Council");
 
                     b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("FURPMS.Domain.Entities.Review.CouncilProjectInvitation", b =>
+                {
+                    b.HasOne("FURPMS.Domain.Entities.Review.CouncilMember", "Member")
+                        .WithMany()
+                        .HasForeignKey("CouncilMemberId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_council_project_invitations_council_members_council_member_");
+
+                    b.Navigation("Member");
                 });
 
             modelBuilder.Entity("FURPMS.Domain.Entities.Review.CouncilQaEntry", b =>

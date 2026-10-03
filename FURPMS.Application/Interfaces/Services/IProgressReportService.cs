@@ -6,7 +6,8 @@ public interface IProgressReportService
 {
     Task<IEnumerable<ProgressReportSummaryDto>> GetByContractAsync(Guid contractId);
     /// <summary>Staff sinh sẵn các kỳ báo cáo. roundCount bỏ trống → mặc định theo loại (Ứng dụng 2 / Cơ bản 1).</summary>
-    Task<IEnumerable<ProgressReportSummaryDto>> GenerateScheduledRoundsAsync(Guid contractId, int? roundCount = null);
+    Task<IEnumerable<ProgressReportSummaryDto>> GenerateScheduledRoundsAsync(Guid contractId, int? roundCount = null, Guid? staffId = null);
+    Task<IEnumerable<ProgressReportSummaryDto>> ResetToTemplateAsync(Guid contractId, string reason, Guid staffId);
     Task<ProgressReportDto> GetByIdAsync(Guid reportId);
     Task<ProgressReportDto> CreateAsync(Guid contractId, CreateProgressReportRequest request, Guid userId);
     /// <summary>PI sửa nội dung báo cáo khi CHƯA nộp (còn DRAFT). Nộp rồi thì khoá.</summary>

@@ -191,6 +191,15 @@ public class ReviewScoringService : IReviewScoringService
             ?? throw new ForbiddenException("Bạn không thuộc hội đồng này.");
         AssertConfirmed(member);
 
+        // Lời mời theo ĐỀ TÀI (03/10): đã từ chối / chưa nhận chấm riêng đề tài này thì không nộp phiếu.
+        // Không có dòng nào (dữ liệu trước 03/10) ⇒ theo xác nhận cấp hội đồng như cũ.
+        var projectInvite = await _review.ProjectInvitations
+            .FirstOrDefaultAsync(i => i.CouncilMemberId == member.Id && i.ProjectId == projectId);
+        if (projectInvite is not null && projectInvite.Status != CouncilMemberStatus.Confirmed)
+            throw new ForbiddenException(projectInvite.Status == CouncilMemberStatus.Declined
+                ? "Bạn đã từ chối chấm đề tài này — không nộp phiếu được."
+                : "Bạn chưa nhận lời chấm đề tài này — vào mục Lời mời để xác nhận trước.");
+
         var template = await _masterData.RubricTemplates
             .Include(t => t.Criteria)
             .FirstOrDefaultAsync(t => t.Id == request.TemplateId)

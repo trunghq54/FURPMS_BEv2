@@ -226,6 +226,24 @@ internal static class ReviewShared
 
     // DÙNG CHUNG round theo track: tái dùng round cùng dimension+type còn mở (PENDING/OPEN), hoặc tạo mới
     // (đánh số sequence/roundNumber tiếp theo trong track). Chỉ AddRoundAsync (KHÔNG SaveChanges) — caller lo lưu.
+    /// <summary>
+    /// Đề tài đang được chấm dở ở một phiên CÙNG LOẠI khác (phiên chưa đóng, đề tài chưa chốt — kể cả
+    /// "Cần chỉnh sửa" đang chờ PI nộp lại, vì đề tài đó chấm lại trong chính phiên cũ). Một đề tài không
+    /// được nằm ở hai phiên đang chấm cùng lúc: hai hội đồng chấm song song, hai biên bản, hai kết luận.
+    /// </summary>
+    public static async Task<HashSet<Guid>> ProjectsBusyInOtherOpenRoundAsync(
+        IReviewRepository review, int cycleTrackId, string roundType, Guid exceptRoundId)
+    {
+        return (await review.ProjectRounds
+            .Where(pr => pr.RoundId != exceptRoundId
+                         && pr.Round.CycleTrackId == cycleTrackId && pr.Round.RoundType == roundType
+                         && (pr.Round.Status == ReviewRoundStatus.Pending || pr.Round.Status == ReviewRoundStatus.Open)
+                         // Chưa chốt Đạt/Không đạt = còn bận (kể cả dữ liệu cũ ghi "REVISION").
+                         && pr.Status != ReviewRoundStatus.Passed && pr.Status != ReviewRoundStatus.Failed)
+            .Select(pr => pr.ProjectId)
+            .ToListAsync()).ToHashSet();
+    }
+
     public static async Task<ReviewRound> GetOrCreateOpenRoundAsync(
         IReviewRepository review, int cycleTrackId, string dimension, string roundType,
         int? rubricTemplateId, Guid? prerequisiteRoundId)
@@ -235,6 +253,18 @@ internal static class ReviewShared
             && (r.Status == ReviewRoundStatus.Pending || r.Status == ReviewRoundStatus.Open));
         if (round != null) return round;
 
+        return await CreateNewRoundAsync(review, cycleTrackId, dimension, roundType, rubricTemplateId, prerequisiteRoundId);
+    }
+
+    /// <summary>
+    /// Luôn tạo phiên MỚI (đánh số tiếp theo trong lĩnh vực). Dùng cho nút "Tạo phiên" của Phòng QLKH —
+    /// 03/10: trước đây nút này đi qua <see cref="GetOrCreateOpenRoundAsync"/> nên còn phiên cùng loại
+    /// đang mở là đề tài bị đổ hết vào phiên cũ, không ra phiên mới. Chỉ AddRoundAsync, caller lo lưu.
+    /// </summary>
+    public static async Task<ReviewRound> CreateNewRoundAsync(
+        IReviewRepository review, int cycleTrackId, string dimension, string roundType,
+        int? rubricTemplateId, Guid? prerequisiteRoundId)
+    {
         var maxSeq = await review.ReviewRounds
             .Where(r => r.CycleTrackId == cycleTrackId)
             .MaxAsync(r => (int?)r.Sequence) ?? 0;
@@ -242,7 +272,7 @@ internal static class ReviewShared
             .Where(r => r.CycleTrackId == cycleTrackId && r.Dimension == dimension)
             .MaxAsync(r => (int?)r.RoundNumber) ?? 0;
 
-        round = new ReviewRound
+        var round = new ReviewRound
         {
             Id = Guid.NewGuid(),
             CycleTrackId = cycleTrackId,

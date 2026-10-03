@@ -17,6 +17,8 @@ public interface IDisbursementService
 
     /// <summary>Xoá lịch (chưa đợt nào đã chi) và sinh lại theo loại đề tài hiện tại — kèm lý do.</summary>
     Task<IEnumerable<DisbursementResponse>> RegenerateAsync(Guid contractId, string reason, Guid staffId);
+    /// <summary>Chỉnh cả lịch giải ngân (thêm / bớt / sửa tỉ lệ, điều kiện) — kèm lý do, ghi sổ quyết định.</summary>
+    Task<IEnumerable<DisbursementResponse>> SaveScheduleAsync(Guid contractId, SaveDisbursementScheduleRequest request, Guid staffId);
 
     /// <summary>Huỷ một lần "đánh dấu đã giải ngân" bấm nhầm — kèm lý do.</summary>
     Task<DisbursementResponse> UndoConfirmAsync(int disbursementId, string reason, Guid staffId);

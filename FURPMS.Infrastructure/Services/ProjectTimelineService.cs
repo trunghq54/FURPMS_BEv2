@@ -63,9 +63,10 @@ public class ProjectTimelineService : IProjectTimelineService
         await AddSubmissionStageAsync(stages, project);
         await AddRevisionStageAsync(stages, projectId);
         await AddReviewStagesAsync(stages, project.CycleTrackId, projectId);
-        // Ứng dụng/triển khai = loại có đơn vị đặt hàng (cờ dùng chung cả hệ thống): 2 kỳ tiến độ, 4 đợt
-        // giải ngân 30–30–30–10. Cơ bản: 1 kỳ tiến độ, giải ngân 1 lần sau nghiệm thu (QĐ543 Điều 10, 16).
-        var isApplied = project.ResearchType?.RequireOrderingUnit == true;
+        // Mã loại cố định APPLIED: 2 kỳ tiến độ, 4 đợt giải ngân 30–30–30–10. BASIC: 1 kỳ tiến độ, giải ngân
+        // 1 lần sau nghiệm thu (QĐ543 Điều 10, 16). Chỉ dùng cho bước CHƯA lập lịch — lịch đã lập (kể cả đã
+        // chỉnh tay) thì lộ trình đi theo lịch thật.
+        var isApplied = ResearchKind.IsApplied(project.ResearchType?.Code);
         await AddContractStagesAsync(stages, projectId, project.Status, isApplied);
         await AddPlannedStagesAsync(stages, project.Status, isApplied);
 
