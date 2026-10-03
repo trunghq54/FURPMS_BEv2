@@ -46,6 +46,8 @@ public class ProgressReportService : IProgressReportService
     private static int RequiredRounds(FURPMS.Domain.Entities.MasterData.ResearchType? type) =>
         ResearchKind.ProgressRounds(ResearchKind.IsApplied(type?.Code));
 
+    private static DateOnly Min(DateOnly a, DateOnly b) => a < b ? a : b;
+
     // Staff sinh sẵn các kỳ báo cáo — chia đều theo mốc hợp đồng; bỏ qua kỳ đã có.
     // roundCount: Staff tự chọn số kỳ; bỏ trống → mặc định theo loại (Ứng dụng 2 / Cơ bản 1).
     public async Task<IEnumerable<ProgressReportSummaryDto>> GenerateScheduledRoundsAsync(
@@ -86,7 +88,10 @@ public class ProgressReportService : IProgressReportService
                 DueDate = pEnd,
                 // Đặt sẵn buổi họp Hội đồng đánh giá tiến độ (QĐ543 Điều 10.1) — 5 ngày làm việc sau hạn
                 // nộp, 9h sáng giờ Việt Nam — để kỳ vừa tạo đã có lịch; Staff đổi ở "Đặt lịch họp" (03/10).
-                ScheduledMeetingAt = DeadlineMath.AddWorkingDays(pEnd, 5).ToDateTime(new TimeOnly(2, 0), DateTimeKind.Utc),
+                // 04/10: kỳ CUỐI có hạn nộp = ngày kết thúc hợp đồng ⇒ +5 ngày làm việc vượt hợp đồng, mà luật
+                // "Đặt lịch họp" bắt buổi họp nằm trong thời gian hợp đồng ⇒ mở ra lưu là lỗi. Kéo về ngày kết thúc.
+                ScheduledMeetingAt = Min(DeadlineMath.AddWorkingDays(pEnd, 5), contract.EndDate)
+                    .ToDateTime(new TimeOnly(2, 0), DateTimeKind.Utc),
                 CompletedContent = "",   // NOT NULL — PI điền sau; để rỗng cho kỳ vừa mở
                 Status = ProgressReportStatus.Draft
             });
