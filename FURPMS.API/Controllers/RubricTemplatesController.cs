@@ -121,10 +121,10 @@ public class RubricTemplatesController : ControllerBase
         var t = await _repo.RubricTemplates.FirstOrDefaultAsync(x => x.Id == id)
             ?? throw new KeyNotFoundException("Không tìm thấy bộ tiêu chí.");
 
-        // Đổi TÊN và loại đề tài áp dụng đều làm lệch nghĩa phiếu đã chấm ⇒ khoá.
-        // Riêng BẬT/TẮT bộ vẫn cho, vì tắt chỉ ngăn dùng cho vòng MỚI, không đụng phiếu cũ.
-        var contentChanged = !string.IsNullOrWhiteSpace(request.Name)
-                             || request.AppliesBasic.HasValue || request.AppliesApplied.HasValue;
+        // Đổi loại đề tài áp dụng làm lệch nghĩa phiếu đã chấm ⇒ khoá khi bộ đã có phiếu.
+        // ĐỔI TÊN thì cho (03/10): tên bộ chỉ là nhãn ở màn quản lý, phiếu chấm và biên bản không in
+        // tên bộ — khoá luôn tên làm Admin gõ sai một chữ là phải nhân bản cả bộ. BẬT/TẮT cũng cho.
+        var contentChanged = request.AppliesBasic.HasValue || request.AppliesApplied.HasValue;
         if (contentChanged) await AssertTemplateEditableAsync(id, "sửa");
 
         if (!string.IsNullOrWhiteSpace(request.Name)) t.Name = request.Name.Trim();
@@ -208,6 +208,7 @@ public class RubricTemplatesController : ControllerBase
             AppliesApplied = request.AppliesApplied,
             IsActive = true
         };
+        if (type == "ACCEPTANCE") tpl.MaxTotalScore = 0m;   // tự cộng khi thêm nội dung
         _repo.Add(tpl);
         await _repo.SaveChangesAsync();
 
@@ -253,21 +254,31 @@ public class RubricTemplatesController : ControllerBase
 
         if (string.IsNullOrWhiteSpace(request.CriterionName))
             throw new ArgumentException("Tên tiêu chí là bắt buộc.");
-        if (request.MaxScore <= 0)
+        var isAcceptance = IsAcceptance(tpl);
+        if (!isAcceptance && request.MaxScore <= 0)
             throw new ArgumentException("Điểm tối đa phải lớn hơn 0.");
         // Thêm tiêu chí vào bộ đã chấm = phiếu cũ thiếu tiêu chí đó, tổng không còn so được.
         await AssertTemplateEditableAsync(id, "thêm tiêu chí");
-        EnsureTotalWithinCap(tpl, addingScore: request.MaxScore);
+        if (!isAcceptance) EnsureTotalWithinCap(tpl, addingScore: request.MaxScore);
 
         var criterion = new RubricCriterion
         {
             TemplateId = tpl.Id,
             CriterionName = request.CriterionName.Trim(),
-            MaxScore = request.MaxScore,
+            // Nghiệm thu: phản biện chấm MỨC 1–5 (Biểu mẫu 10), không có điểm tối đa để nhập —
+            // lưu trần = 5 để điểm lưu chính là mức.
+            MaxScore = isAcceptance ? AcceptanceLevelMax : request.MaxScore,
             Sequence = request.Sequence ?? (tpl.Criteria.Count == 0 ? 1 : tpl.Criteria.Max(c => c.Sequence) + 1),
             IsActive = request.IsActive ?? true
         };
         _repo.Add(criterion);
+        if (isAcceptance)
+        {
+            // EF đã tự gắn tiêu chí vào tpl.Criteria khi Add (fix-up theo TemplateId) — chỉ thêm
+            // khi chưa có, không thì tổng bị cộng hai lần.
+            if (!tpl.Criteria.Contains(criterion)) tpl.Criteria.Add(criterion);
+            SyncAcceptanceTotal(tpl);
+        }
         await _repo.SaveChangesAsync();
         return Ok(ApiResponse.Ok("Đã thêm tiêu chí."));
     }
@@ -288,7 +299,8 @@ public class RubricTemplatesController : ControllerBase
         await AssertTemplateEditableAsync(id, "sửa tiêu chí");
 
         if (!string.IsNullOrWhiteSpace(request.CriterionName)) c.CriterionName = request.CriterionName.Trim();
-        if (request.MaxScore > 0)
+        // Nghiệm thu không có điểm tối đa để sửa (luôn mức 1–5).
+        if (request.MaxScore > 0 && !IsAcceptance(tpl))
         {
             // Trừ điểm CŨ của chính tiêu chí này ra rồi mới cộng điểm mới, không thì sửa
             // 20 → 20 cũng bị coi là vượt trần.
@@ -299,6 +311,7 @@ public class RubricTemplatesController : ControllerBase
         if (request.IsActive.HasValue) c.IsActive = request.IsActive.Value;
 
         _repo.Update(c);
+        SyncAcceptanceTotal(tpl);
         await _repo.SaveChangesAsync();
         return Ok(ApiResponse.Ok("Đã lưu tiêu chí."));
     }
@@ -314,17 +327,21 @@ public class RubricTemplatesController : ControllerBase
         // Bộ đã dùng chấm thì bỏ bớt tiêu chí cũng là đổi nghĩa phiếu cũ — kể cả chỉ TẮT, vì tắt
         // xong tổng không còn cộng đủ trần và không ai chấm tiếp được bằng bộ đó.
         await AssertTemplateEditableAsync(id, "xoá tiêu chí");
+        var tpl = await _repo.RubricTemplates.Include(t => t.Criteria).FirstAsync(t => t.Id == id);
 
         // Đã có điểm chấm theo tiêu chí này ⇒ chỉ tắt, giữ lịch sử.
         if (await _review.ReviewScoreDetails.AnyAsync(d => d.CriterionId == criterionId))
         {
             c.IsActive = false;
             _repo.Update(c);
+            SyncAcceptanceTotal(tpl);
             await _repo.SaveChangesAsync();
             return Ok(ApiResponse.Ok("Tiêu chí đã được dùng để chấm nên chỉ TẮT, không xoá (giữ lịch sử điểm)."));
         }
 
         _repo.Remove(c);
+        tpl.Criteria.Remove(tpl.Criteria.First(x => x.Id == c.Id));
+        SyncAcceptanceTotal(tpl);
         await _repo.SaveChangesAsync();
         return Ok(ApiResponse.Ok("Đã xoá tiêu chí."));
     }
@@ -392,6 +409,24 @@ public class RubricTemplatesController : ControllerBase
             $"Bộ tiêu chí này đã được dùng để chấm ({ballots} phiếu) nên không {action} được nữa — " +
             "sửa là đổi nghĩa những phiếu đã chấm. Hãy bấm \"Nhân bản\" để tạo bộ mới rồi gắn cho " +
             "vòng chấm sau; các vòng đang dùng bộ cũ giữ nguyên.");
+    }
+
+    /// <summary>Mức cao nhất của thang Biểu mẫu 10 (1 Yếu … 5 Xuất sắc).</summary>
+    private const decimal AcceptanceLevelMax = 5m;
+
+    private static bool IsAcceptance(RubricTemplate t) =>
+        string.Equals(t.TemplateType, "ACCEPTANCE", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Bộ NGHIỆM THU không có "Cộng 100" như BM03: QĐ543 Biểu mẫu 10 cho phản biện chấm từng nội
+    /// dung theo mức 1–5, không quy định tổng. Nên tổng của bộ = tổng trần các nội dung đang bật,
+    /// tự cập nhật — Admin không phải cộng cho đủ 100, và bộ luôn hợp lệ để đem chấm.
+    /// (Bộ cũ 4 × 25 vẫn chạy: màn chấm và biên bản quy điểm về mức theo tỉ lệ trần/5.)
+    /// </summary>
+    private static void SyncAcceptanceTotal(RubricTemplate tpl)
+    {
+        if (!IsAcceptance(tpl)) return;
+        tpl.MaxTotalScore = tpl.Criteria.Where(c => c.IsActive).Sum(c => c.MaxScore);
     }
 
     /// <summary>

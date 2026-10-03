@@ -38,7 +38,8 @@ public class ProgressReportService : IProgressReportService
     {
         "PASS" => "Đạt",
         "FAIL" => "Không đạt",
-        _ => "Đạt có điều kiện"
+        "CONDITIONAL" => "Đạt có điều kiện",   // chỉ còn ở dữ liệu cũ (trước 03/10)
+        _ => result ?? ""
     };
 
     // QĐ543 Điều 10.1: Ứng dụng 2 kỳ, Cơ bản 1 kỳ. Applied = loại có đặt hàng (RequireOrderingUnit).
@@ -80,6 +81,9 @@ public class ProgressReportService : IProgressReportService
                 ReportingPeriodStart = pStart,
                 ReportingPeriodEnd = pEnd,
                 DueDate = pEnd,
+                // Đặt sẵn buổi họp Hội đồng đánh giá tiến độ (QĐ543 Điều 10.1) — 5 ngày làm việc sau hạn
+                // nộp, 9h sáng giờ Việt Nam — để kỳ vừa tạo đã có lịch; Staff đổi ở "Đặt lịch họp" (03/10).
+                ScheduledMeetingAt = DeadlineMath.AddWorkingDays(pEnd, 5).ToDateTime(new TimeOnly(2, 0), DateTimeKind.Utc),
                 CompletedContent = "",   // NOT NULL — PI điền sau; để rỗng cho kỳ vừa mở
                 Status = ProgressReportStatus.Draft
             });
@@ -215,11 +219,15 @@ public class ProgressReportService : IProgressReportService
         // Bỏ trống thì GIỮ link cũ — nộp lại mà không dán lại link không được mất bản cũ.
         if (!string.IsNullOrWhiteSpace(request.ReportFileUrl))
         {
+            // Dán "drive.google.com/..." thiếu "https://" thì tự thêm — giống sản phẩm và báo cáo tổng
+            // kết. Trước 03/10 chỗ này bắt gõ đủ scheme nên chỉ riêng báo cáo tiến độ báo lỗi.
             var reportUrl = request.ReportFileUrl.Trim();
-            if (!Uri.TryCreate(reportUrl, UriKind.Absolute, out var uri)
-                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-                throw new ArgumentException("Link báo cáo phải là địa chỉ đầy đủ bắt đầu bằng http:// hoặc https://.");
-            report.ReportFileUrl = reportUrl;
+            if (!reportUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                && !reportUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                reportUrl = "https://" + reportUrl;
+            if (!Uri.TryCreate(reportUrl, UriKind.Absolute, out var uri) || !uri.Host.Contains('.'))
+                throw new ArgumentException($"Link báo cáo không hợp lệ: \"{request.ReportFileUrl.Trim()}\".");
+            report.ReportFileUrl = uri.ToString();
         }
 
         // Bảng tiến độ theo hoạt động (BM06): gửi lên thì THAY toàn bộ bảng cũ.
@@ -316,7 +324,7 @@ public class ProgressReportService : IProgressReportService
     /// tài "nhảy cóc" một kỳ mà không ai giải thích được.
     /// <para>Chủ nhiệm xoá bản nháp của mình; Staff xoá kỳ do chính Staff sinh nhầm bằng lịch.</para>
     /// </summary>
-    public async Task DeleteAsync(Guid reportId, Guid actingUserId, bool isStaff)
+    public async Task DeleteAsync(Guid reportId, Guid actingUserId, bool isStaff, string? reason = null)
     {
         var report = await _contracts.ProgressReports
             .Include(r => r.Contract).ThenInclude(c => c.Project)
@@ -326,10 +334,29 @@ public class ProgressReportService : IProgressReportService
         if (!isStaff && report.Contract.Project.PiUserId != actingUserId)
             throw new ForbiddenException("Chỉ chủ nhiệm đề tài hoặc phòng QLKH mới xoá được báo cáo này.");
 
-        if (report.Status != ProgressReportStatus.Draft)
+        // Đã có kết luận hội đồng ⇒ không xoá thẳng: phải "Mở lại" (ghi lý do) trước, để sổ quyết
+        // định còn dấu vết vì sao một kết luận biến mất.
+        if (!string.IsNullOrWhiteSpace(report.EvaluationResult))
             throw new InvalidOperationException(
-                $"Báo cáo đang ở trạng thái {StatusText.Vi(report.Status)} — chỉ xoá được bản nháp. " +
-                "Báo cáo đã nộp là căn cứ trong hồ sơ nghiệm thu, không xoá khỏi lịch sử.");
+                "Kỳ báo cáo này đã có kết luận của hội đồng — bấm \"Mở lại\" (ghi lý do) trước rồi mới xoá được.");
+
+        // PI chỉ xoá bản nháp. Phòng QLKH xoá được cả bản ĐÃ NỘP (nộp nhầm, nộp sai kỳ) nhưng phải
+        // ghi lý do (03/10 — trước đây bản đã nộp kẹt vĩnh viễn, kể cả khi rõ ràng là sai sót).
+        if (report.Status != ProgressReportStatus.Draft)
+        {
+            if (!isStaff)
+                throw new InvalidOperationException(
+                    $"Báo cáo đang ở trạng thái {StatusText.Vi(report.Status)} — chủ nhiệm chỉ xoá được bản nháp. " +
+                    "Nếu nộp nhầm, liên hệ phòng QLKH.");
+            if (string.IsNullOrWhiteSpace(reason))
+                throw new ArgumentException("Xoá báo cáo đã nộp phải ghi lý do.");
+            var ky = string.IsNullOrWhiteSpace(report.RoundName) ? $"kỳ {report.ReportRound}" : report.RoundName;
+            _decisions.Log(
+                report.Contract.ProjectId, DecisionTypes.ResultReopened,
+                $"Phòng QLKH xoá báo cáo tiến độ {ky} đã nộp",
+                "ProgressReport", report.Id.ToString(),
+                result: "DELETED", reason: reason.Trim(), decidedBy: actingUserId, decidedByRole: "Phòng QLKH");
+        }
 
         var items = await _contracts.ProgressReportItems.Where(i => i.ReportId == reportId).ToListAsync();
         if (items.Count > 0) _contracts.RemoveProgressReportItemsRange(items);
@@ -338,13 +365,74 @@ public class ProgressReportService : IProgressReportService
         await _contracts.SaveChangesAsync();
     }
 
+    /// <summary>
+    /// Mở lại kết luận đã ghi (03/10): ghi nhầm kết luận, tải nhầm biên bản, hay hội đồng họp lại.
+    /// Báo cáo trở về "Đã nộp" — PI sửa và nộp lại được, Phòng QLKH ghi nhận kết luận mới. Kết luận
+    /// cũ không mất dấu: sổ quyết định giữ cả dòng cũ lẫn dòng "mở lại" kèm lý do.
+    /// Chặn khi kết luận "Đạt" đã dùng để giải ngân đợt kế tiếp — tiền đã chi thì không rút lại bằng
+    /// một cú bấm.
+    /// </summary>
+    public async Task<ProgressReportDto> ReopenAsync(Guid reportId, string reason, Guid staffId)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException("Mở lại kết luận phải ghi lý do.");
+
+        var report = await _contracts.ProgressReports
+            .Include(r => r.Contract).ThenInclude(c => c.Project)
+            .FirstOrDefaultAsync(r => r.Id == reportId)
+            ?? throw new KeyNotFoundException("Không tìm thấy báo cáo tiến độ.");
+
+        if (string.IsNullOrWhiteSpace(report.EvaluationResult))
+            throw new InvalidOperationException("Kỳ báo cáo này chưa có kết luận nên không có gì để mở lại.");
+
+        // Điều 16.1.b: đợt giải ngân (kỳ + 1) mở nhờ kỳ này Đạt.
+        var nextTranche = report.ReportRound + 1;
+        var paid = await _contracts.Disbursements.AnyAsync(d =>
+            d.ContractId == report.ContractId && d.RoundNumber == nextTranche && d.Status == DisbursementStatus.Disbursed);
+        if (paid && report.EvaluationResult == "PASS")
+            throw new InvalidOperationException(
+                $"Kết luận Đạt của kỳ này đã dùng để giải ngân đợt {nextTranche} — không mở lại được. " +
+                "Cần điều chỉnh thì lập đơn điều chỉnh / quyết định riêng.");
+
+        var oldResult = ProgressResultVi(report.EvaluationResult);
+        report.Status = ProgressReportStatus.Submitted;
+        report.EvaluationResult = null;
+        report.EvaluationComments = null;
+        report.EvaluatedAt = null;
+        report.EvaluatedBy = null;
+        report.UpdatedAt = _clock.UtcNow;
+
+        var ky = string.IsNullOrWhiteSpace(report.RoundName) ? $"kỳ {report.ReportRound}" : report.RoundName;
+        _decisions.Log(
+            report.Contract.ProjectId, DecisionTypes.ResultReopened,
+            $"Mở lại kết luận đánh giá tiến độ {ky} (trước đó: {oldResult})",
+            "ProgressReport", report.Id.ToString(),
+            result: "REOPENED", reason: reason.Trim(), decidedBy: staffId, decidedByRole: "Phòng QLKH");
+        await _contracts.SaveChangesAsync();
+
+        await _notifier.NotifyAsync(
+            report.Contract.Project.PiUserId,
+            "PROGRESS_REPORT_REOPENED",
+            "Kết luận tiến độ được mở lại",
+            $"Phòng QLKH mở lại kết luận báo cáo tiến độ {ky} của đề tài \"{report.Contract.Project.TitleVi}\". " +
+            $"Lý do: {reason.Trim()}",
+            actionUrl: "/progress-reports",
+            entityType: "ProgressReport",
+            entityId: report.Id.ToString(),
+            priority: "HIGH");
+
+        return await GetByIdAsync(reportId);
+    }
+
     public async Task<ProgressReportDto> EvaluateAsync(Guid reportId, EvaluateProgressReportRequest request, Guid staffId)
     {
-        // QĐ543 Điều 10 / BM06: kết quả đánh giá tiến độ = Đạt / Không đạt / Có điều kiện.
-        // (Trước đây BE nhận SATISFACTORY/… còn FE gửi APPROVED/… → Staff bấm đánh giá luôn 400.)
-        var validResults = new[] { "PASS", "FAIL", "CONDITIONAL" };
+        // Chỉ Đạt / Không đạt (03/10). QĐ543 không có mức "Đạt có điều kiện": Điều 16.1.b chỉ hỏi giai
+        // đoạn có đánh giá "Đạt" hay không để giải ngân đợt sau — mức thứ ba không mở được gì mà cũng
+        // không chặn được gì, chỉ làm Staff phân vân. "Không đạt" KHÔNG chấm dứt hợp đồng: nó giữ đợt
+        // giải ngân kế tiếp lại, còn đình chỉ hay gia hạn là Hiệu trưởng quyết theo Điều 10.3.
+        var validResults = new[] { "PASS", "FAIL" };
         if (!validResults.Contains(request.EvaluationResult))
-            throw new ArgumentException($"Kết quả đánh giá chỉ nhận: {string.Join(", ", validResults)} (Đạt / Không đạt / Đạt có điều kiện).");
+            throw new ArgumentException("Kết luận của hội đồng tiến độ chỉ nhận Đạt (PASS) hoặc Không đạt (FAIL).");
 
         var report = await _contracts.ProgressReports
             .FirstOrDefaultAsync(r => r.Id == reportId)
@@ -403,7 +491,7 @@ public class ProgressReportService : IProgressReportService
         await _contracts.SaveChangesAsync();
 
         // Báo chủ nhiệm KẾT QUẢ đánh giá. Trước đây hệ thống im lặng — PI nộp xong không biết
-        // đã được duyệt chưa, mà kết quả "Không đạt"/"Đạt có điều kiện" thì họ phải biết NGAY
+        // đã được duyệt chưa, mà kết quả "Không đạt" thì họ phải biết NGAY
         // để còn kịp khắc phục; kỳ sau chỉ mở khi kỳ trước đã có kết quả.
         var info = await _contracts.ProgressReports
             .Where(r => r.Id == reportId)

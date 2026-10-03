@@ -31,6 +31,11 @@ public static class DecisionTypes
 
     // ── Thực hiện & nghiệm thu ───────────────────────────────────────────
     public const string ProgressEvaluated = "PROGRESS_EVALUATED";
+    /// <summary>
+    /// Phòng QLKH mở lại một kết quả đã ghi (đánh giá tiến độ / nghiệm thu sản phẩm) hoặc gỡ một bản
+    /// đã nộp vì sai sót — luôn kèm lý do, để sổ quyết định giải thích được vì sao kết quả cũ mất.
+    /// </summary>
+    public const string ResultReopened = "RESULT_REOPENED";
     public const string DeliverableAccepted = "DELIVERABLE_ACCEPTED";
     public const string DisbursementConfirmed = "DISBURSEMENT_CONFIRMED";
     public const string FinalReportApproved = "FINAL_REPORT_APPROVED";
@@ -72,6 +77,7 @@ public static class DecisionTypes
 
         ProgressEvaluated => 90,
         DeliverableAccepted => 95,
+        ResultReopened => 96,
         DisbursementConfirmed => 100,
 
         FinalReportApproved => 110,
@@ -94,7 +100,7 @@ public static class DecisionTypes
         ContractCreated or ContractSigned or ContractTerminated
             or AmendmentApproved => "CONTRACT",
 
-        ProgressEvaluated or DeliverableAccepted or DisbursementConfirmed => "EXECUTION",
+        ProgressEvaluated or DeliverableAccepted or ResultReopened or DisbursementConfirmed => "EXECUTION",
 
         FinalReportApproved or SettlementSigned => "CLOSING",
 

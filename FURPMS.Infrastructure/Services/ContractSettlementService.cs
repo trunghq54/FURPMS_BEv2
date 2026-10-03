@@ -69,6 +69,13 @@ public class ContractSettlementService : IContractSettlementService
                 $"Còn {pending.Count} đợt giải ngân chưa đánh dấu đã chi (đợt {string.Join(", ", pending)}) " +
                 "— chưa thể lập quyết toán. Đợt cuối chỉ mở sau khi hội đồng nghiệm thu kết luận Đạt.");
 
+        // Hạn hoàn tất = hạn giao nộp hồ sơ sau nghiệm thu (QĐ543 Điều 13.3, đã đặt lúc chốt nghiệm thu
+        // Đạt). Trước 03/10 FE không gửi hạn nên hồ sơ quyết toán nào cũng "chưa đặt hạn".
+        var deadline = request.SettlementDeadline ?? await _contracts.FinalReports
+            .Where(r => r.ProjectId == contract.ProjectId)
+            .Select(r => r.ArchivalDeadline)
+            .FirstOrDefaultAsync();
+
         var settlement = new ContractSettlement
         {
             ContractId = contractId,
@@ -76,7 +83,7 @@ public class ContractSettlementService : IContractSettlementService
             TotalDisbursedAmount = request.TotalDisbursedAmount,
             TotalReturnedAmount = request.TotalReturnedAmount,
             ProductsSubmittedSummary = request.ProductsSubmittedSummary,
-            SettlementDeadline = request.SettlementDeadline,
+            SettlementDeadline = deadline,
             Notes = request.Notes,
             CreatedAt = DateTime.UtcNow,
         };
@@ -159,6 +166,80 @@ public class ContractSettlementService : IContractSettlementService
 
         AssertUnlocked(settlement);
         settlement.AssetsClearedAt = clear ? clearedDate ?? DateOnly.FromDateTime(_clock.UtcNow) : null;
+        await _contracts.SaveChangesAsync();
+        return ToDto(settlement);
+    }
+
+    public async Task<SettlementDto> UpdateAsync(int settlementId, CreateSettlementRequest request)
+    {
+        var settlement = await _contracts.Settlements
+            .Include(s => s.SideASignee)
+            .FirstOrDefaultAsync(s => s.Id == settlementId)
+            ?? throw new KeyNotFoundException("Không tìm thấy hồ sơ quyết toán.");
+        AssertUnlocked(settlement);
+        if (request.TotalContractedAmount < 0 || request.TotalDisbursedAmount < 0 || request.TotalReturnedAmount < 0)
+            throw new ArgumentException("Các khoản tiền không được âm.");
+
+        settlement.TotalContractedAmount = request.TotalContractedAmount;
+        settlement.TotalDisbursedAmount = request.TotalDisbursedAmount;
+        settlement.TotalReturnedAmount = request.TotalReturnedAmount;
+        settlement.ProductsSubmittedSummary = request.ProductsSubmittedSummary;
+        settlement.Notes = request.Notes;
+        if (request.SettlementDeadline.HasValue) settlement.SettlementDeadline = request.SettlementDeadline;
+        await _contracts.SaveChangesAsync();
+        return ToDto(settlement);
+    }
+
+    public async Task DeleteAsync(int settlementId, string reason, Guid staffId)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException("Xoá hồ sơ quyết toán phải ghi lý do.");
+        var settlement = await _contracts.Settlements
+            .Include(s => s.Contract)
+            .FirstOrDefaultAsync(s => s.Id == settlementId)
+            ?? throw new KeyNotFoundException("Không tìm thấy hồ sơ quyết toán.");
+        AssertUnlocked(settlement);
+
+        _decisions.Log(
+            settlement.Contract.ProjectId, DecisionTypes.ResultReopened,
+            "Xoá hồ sơ quyết toán (chưa ký) để lập lại",
+            "ContractSettlement", settlement.Id.ToString(),
+            result: "DELETED", reason: reason.Trim(), decidedBy: staffId, decidedByRole: "Phòng QLKH");
+        _contracts.RemoveSettlement(settlement);
+        await _contracts.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Huỷ chữ ký BM13 (03/10) — ký nhầm, hay biên bản phải sửa sau khi đã ký. Hợp đồng về Đang hiệu
+    /// lực, hai mốc kế toán/tài sản giữ nguyên. Chữ ký cũ không biến mất: sổ quyết định giữ cả dòng
+    /// "Ký biên bản thanh lý" lẫn dòng huỷ kèm lý do.
+    /// </summary>
+    public async Task<SettlementDto> UnsignAsync(int settlementId, string reason, Guid staffId)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException("Huỷ chữ ký biên bản thanh lý phải ghi lý do.");
+        var settlement = await _contracts.Settlements
+            .Include(s => s.SideASignee)
+            .Include(s => s.Contract)
+            .FirstOrDefaultAsync(s => s.Id == settlementId)
+            ?? throw new KeyNotFoundException("Không tìm thấy hồ sơ quyết toán.");
+        if (settlement.SettlementSignedAt == null)
+            throw new InvalidOperationException("Biên bản thanh lý chưa ký nên không có gì để huỷ.");
+
+        settlement.SettlementSignedAt = null;
+        settlement.SideASigneeId = null;
+        settlement.SideASignee = null;
+        if (settlement.Contract.Status == ContractStatus.Settled)
+        {
+            settlement.Contract.Status = ContractStatus.Active;
+            settlement.Contract.UpdatedAt = _clock.UtcNow;
+        }
+        _decisions.Log(
+            settlement.Contract.ProjectId, DecisionTypes.ResultReopened,
+            "Huỷ chữ ký Biên bản thanh lý (BM13)",
+            "ContractSettlement", settlement.Id.ToString(),
+            result: "REOPENED", reason: reason.Trim(), documentNo: "BM13",
+            decidedBy: staffId, decidedByRole: "Phòng QLKH");
         await _contracts.SaveChangesAsync();
         return ToDto(settlement);
     }

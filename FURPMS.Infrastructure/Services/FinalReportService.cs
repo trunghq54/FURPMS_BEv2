@@ -132,12 +132,38 @@ public class FinalReportService : IFinalReportService
             throw new InvalidOperationException($"Báo cáo đang ở trạng thái {StatusText.Vi(report.Status)} — chỉ chấp nhận được báo cáo đã nộp.");
 
         report.Status = FinalReportStatus.Accepted;
-        // Trước 25/08 chỗ này hardcode "+3 tháng". Cẩm nang chống trượt xếp hardcode tham số nghiệp
-        // vụ là nguyên nhân trượt phổ biến thứ 2, và câu hỏi kinh điển của hội đồng là "đổi con số
-        // này rồi demo ngay đi" — nên đưa ra system_settings, Admin sửa được, hiệu lực ngay.
-        var archivalDays = await _settings.GetIntAsync(
-            SystemSettingKeys.ArchivalLeadDays, SystemSettingKeys.DefaultArchivalLeadDays);
-        report.ArchivalDeadline = DateOnly.FromDateTime(_clock.UtcNow).AddDays(archivalDays);
+        // 03/10: KHÔNG đặt hạn lưu trữ ở đây nữa. "Tiếp nhận" báo cáo tổng kết là để đưa vào hồ sơ
+        // nghiệm thu (Điều 11.1.a); hạn giao nộp/lưu trữ tính từ NGÀY NGHIỆM THU (Điều 13.3) — được
+        // đặt khi Chủ tịch chốt biên bản nghiệm thu Đạt (ReviewScoringService.ApproveMinutesAsync).
+        await _contracts.SaveChangesAsync();
+        return Map(report);
+    }
+
+    /// <summary>
+    /// Mở lại (03/10): tiếp nhận nhầm, lưu trữ nhầm, hay chủ nhiệm cần thay bản báo cáo sau khi đã duyệt.
+    /// Báo cáo về "Yêu cầu chỉnh sửa" để chủ nhiệm nộp lại được; sổ quyết định giữ lý do.
+    /// </summary>
+    public async Task<FinalReportDto> ReopenAsync(Guid reportId, string reason, Guid staffId)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException("Mở lại báo cáo tổng kết phải ghi lý do.");
+        var report = await _contracts.FinalReports
+            .FirstOrDefaultAsync(r => r.Id == reportId)
+            ?? throw new KeyNotFoundException("Không tìm thấy báo cáo tổng kết.");
+        if (report.Status is not (FinalReportStatus.Accepted or FinalReportStatus.Archived))
+            throw new InvalidOperationException(
+                $"Báo cáo đang ở trạng thái {StatusText.Vi(report.Status)} — chỉ mở lại được báo cáo đã tiếp nhận hoặc đã lưu trữ.");
+
+        var old = StatusText.Vi(report.Status);
+        report.Status = FinalReportStatus.RevisionRequired;
+        report.RevisionNotes = reason.Trim();
+        report.ArchivedAt = null;
+        _decisions.Log(
+            report.ProjectId, DecisionTypes.ResultReopened,
+            $"Mở lại báo cáo tổng kết (trước đó: {old})",
+            "FinalReport", report.Id.ToString(),
+            result: "REOPENED", reason: reason.Trim(), documentNo: "BM09",
+            decidedBy: staffId, decidedByRole: "Phòng QLKH");
         await _contracts.SaveChangesAsync();
         return Map(report);
     }
@@ -157,6 +183,17 @@ public class FinalReportService : IFinalReportService
             throw new InvalidOperationException(
                 "Chưa có bản tóm tắt báo cáo tổng kết — phải nộp đủ báo cáo đầy đủ và bản tóm tắt trước khi lưu trữ.");
 
+        // Điều 13.1: lưu trữ là bước SAU nghiệm thu ("Sau khi nghiệm thu Đề tài, chủ nhiệm hoàn thiện
+        // hồ sơ…" — bản báo cáo đã sửa theo ý kiến hội đồng nghiệm thu). Trước 03/10 lưu trữ được ngay
+        // khi vừa tiếp nhận báo cáo, tức là trước cả buổi họp nghiệm thu.
+        var projectStatus = await _contracts.Query()
+            .Where(c => c.ProjectId == report.ProjectId)
+            .Select(c => c.Project.Status)
+            .FirstOrDefaultAsync();
+        if (projectStatus != ProjectStatus.Completed)
+            throw new InvalidOperationException(
+                "Đề tài chưa được hội đồng nghiệm thu kết luận Đạt — lưu trữ hồ sơ là bước sau nghiệm thu (QĐ543 Điều 13.1).");
+
         report.Status = FinalReportStatus.Archived;
         report.ArchivedAt = _clock.UtcNow;
 
@@ -164,7 +201,7 @@ public class FinalReportService : IFinalReportService
             report.ProjectId, DecisionTypes.FinalReportApproved,
             "Duyệt và lưu trữ báo cáo tổng kết đề tài",
             "FinalReport", report.Id.ToString(),
-            result: report.Status, documentNo: "BM12", decidedByRole: "Phòng QLKH");
+            result: report.Status, documentNo: "BM09", decidedByRole: "Phòng QLKH");
 
         await _contracts.SaveChangesAsync();
         return Map(report);

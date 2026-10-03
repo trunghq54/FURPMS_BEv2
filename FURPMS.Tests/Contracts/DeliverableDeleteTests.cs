@@ -137,14 +137,54 @@ public class DeliverableDeleteTests
     }
 
     [Fact]
-    public async Task Delete_AlreadySubmitted_Throws()
+    public async Task Delete_AlreadySubmitted_WithoutReason_Throws()
     {
         var (db, deliverable, _) = await SeedAsync(submitted: true);
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<ArgumentException>(
             () => MakeService(db).DeleteAsync(deliverable.Id));
 
         Assert.Contains("đã được nộp minh chứng", ex.Message);
+        Assert.NotNull(await db.ProjectDeliverables.FindAsync(deliverable.Id));
+    }
+
+    /// <summary>03/10: bản đã nộp xoá được khi có lý do — và lý do nằm lại trong sổ quyết định.</summary>
+    [Fact]
+    public async Task Delete_AlreadySubmitted_WithReason_LogsDecision()
+    {
+        var (db, deliverable, _) = await SeedAsync(submitted: true);
+
+        await MakeService(db).DeleteAsync(deliverable.Id, "Tạo trùng sản phẩm", Guid.NewGuid());
+
+        Assert.Null(await db.ProjectDeliverables.FindAsync(deliverable.Id));
+        var log = Assert.Single(db.ProjectDecisions.Where(x => x.DecisionType == DecisionTypes.ResultReopened));
+        Assert.Equal("Tạo trùng sản phẩm", log.Reason);
+    }
+
+    /// <summary>Sửa kết quả Đạt → Không đạt (chấm nhầm) thì đợt giải ngân đã mở phải khoá lại.</summary>
+    [Fact]
+    public async Task Reevaluate_PassedToFailed_RelocksTranche()
+    {
+        var (db, deliverable, _) = await SeedAsync(acceptanceStatus: AcceptanceStatus.Passed, submitted: true, linkedToTranche: true);
+        db.ContractDisbursements.Single().ConditionMetAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+
+        await MakeService(db).EvaluateAsync(deliverable.Id,
+            new EvaluateDeliverableRequest { AcceptanceStatus = AcceptanceStatus.Failed, QualityAssessment = "Chấm nhầm" },
+            Guid.NewGuid());
+
+        Assert.Null(db.ContractDisbursements.Single().ConditionMetAt);
+    }
+
+    [Fact]
+    public async Task Reevaluate_PassedToFailed_WhenTranchePaid_Throws()
+    {
+        var (db, deliverable, _) = await SeedAsync(acceptanceStatus: AcceptanceStatus.Passed, submitted: true, linkedToTranche: true);
+        db.ContractDisbursements.Single().Status = DisbursementStatus.Disbursed;
+        await db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => MakeService(db).EvaluateAsync(deliverable.Id,
+            new EvaluateDeliverableRequest { AcceptanceStatus = AcceptanceStatus.Failed }, Guid.NewGuid()));
     }
 
     /// <summary>Cửa khoá nặng nhất: sản phẩm đang là điều kiện mở một đợt giải ngân.</summary>

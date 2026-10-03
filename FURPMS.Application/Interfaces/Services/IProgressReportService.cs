@@ -11,7 +11,8 @@ public interface IProgressReportService
     Task<ProgressReportDto> CreateAsync(Guid contractId, CreateProgressReportRequest request, Guid userId);
     /// <summary>PI sửa nội dung báo cáo khi CHƯA nộp (còn DRAFT). Nộp rồi thì khoá.</summary>
     Task<ProgressReportDto> UpdateAsync(Guid reportId, UpdateProgressReportRequest request, Guid userId);
-    Task DeleteAsync(Guid reportId, Guid actingUserId, bool isStaff);
+    Task DeleteAsync(Guid reportId, Guid actingUserId, bool isStaff, string? reason = null);
+    Task<ProgressReportDto> ReopenAsync(Guid reportId, string reason, Guid staffId);
     Task<ProgressReportDto> SubmitAsync(Guid reportId, Guid userId);
     Task<ProgressReportDto> EvaluateAsync(Guid reportId, EvaluateProgressReportRequest request, Guid staffId);
     Task<ProgressReportDto> ScheduleAsync(Guid reportId, ScheduleProgressReportRequest request);

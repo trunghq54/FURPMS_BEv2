@@ -28,4 +28,5 @@ public interface IContractRepository : IRepository<Contract>
     void RemoveProgressReportsRange(IEnumerable<ProgressReport> items);
     Task AddFinalReportAsync(FinalReport report);
     Task AddSettlementAsync(ContractSettlement settlement);
+    void RemoveSettlement(ContractSettlement settlement);
 }

@@ -23,4 +23,21 @@ public static class DeadlineMath
     /// <summary>Bản tiện dụng nhận thẳng đồng hồ hệ thống.</summary>
     public static int? DaysLeft(DateOnly? due, IClock clock) =>
         DaysLeft(due, DateOnly.FromDateTime(clock.UtcNow));
+
+    /// <summary>
+    /// Cộng <paramref name="workingDays"/> ngày làm việc (bỏ thứ Bảy, Chủ nhật) — QĐ543 tính nhiều mốc
+    /// theo NGÀY LÀM VIỆC (Điều 8.3.a, 12.3.a họp hội đồng; Điều 13.3 hoàn tất giao nộp 60 ngày làm việc).
+    /// Không trừ ngày lễ: lịch nghỉ lễ đổi theo năm, hệ thống không có nguồn tin cậy để biết.
+    /// </summary>
+    public static DateOnly AddWorkingDays(DateOnly start, int workingDays)
+    {
+        var d = start;
+        var added = 0;
+        while (added < workingDays)
+        {
+            d = d.AddDays(1);
+            if (d.DayOfWeek is not (DayOfWeek.Saturday or DayOfWeek.Sunday)) added++;
+        }
+        return d;
+    }
 }

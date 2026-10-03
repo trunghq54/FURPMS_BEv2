@@ -81,9 +81,14 @@ public static class SystemSettingKeys
     public const string ContractSignWindowDays = "CONTRACT_SIGN_WINDOW_DAYS";
     public const int DefaultContractSignWindowDays = 30;
 
-    /// <summary>Số ngày để hoàn tất lưu trữ hồ sơ sau khi nộp báo cáo tổng kết.</summary>
+    /// <summary>
+    /// Số NGÀY LÀM VIỆC để chủ nhiệm hoàn tất giao nộp hồ sơ (lưu trữ + quyết toán) kể từ ngày nghiệm
+    /// thu — QĐ543 <b>Điều 13.3</b>: "hoàn tất trong 60 ngày làm việc kể từ ngày kết thúc nghiệm thu".
+    /// Trước 03/10 là 90 ngày lịch tính từ lúc Phòng QLKH "tiếp nhận" báo cáo tổng kết — sai mốc
+    /// (trước cả khi hội đồng nghiệm thu họp) và sai đơn vị.
+    /// </summary>
     public const string ArchivalLeadDays = "ARCHIVAL_LEAD_DAYS";
-    public const int DefaultArchivalLeadDays = 90;
+    public const int DefaultArchivalLeadDays = 60;
 
     /// <summary>
     /// Hội đồng phải họp trong bao nhiêu ngày làm việc kể từ khi được lập.

@@ -49,6 +49,7 @@ public static class StatusText
         ["PROPOSED"] = "Mới đề xuất",
         ["REJECTED"] = "Không duyệt",
         ["REOPENED"] = "Đã mở lại",
+        ["DELETED"] = "Đã xoá",
         ["REVISION_REQUIRED"] = "Cần chỉnh sửa",
         ["SATISFACTORY"] = "Đạt",
         ["SCHEDULED"] = "Đã lên lịch",

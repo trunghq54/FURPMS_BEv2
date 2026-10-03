@@ -20,6 +20,8 @@ public class ReviewScoringService : IReviewScoringService
 
     private readonly INotifier _notifier;
     private readonly IDecisionLogger _decisions;
+    // Tuỳ chọn (03/10): chỉ để đặt hạn hoàn tất hồ sơ khi nghiệm thu Đạt — test cũ không truyền vẫn chạy.
+    private readonly IContractRepository? _contracts;
 
     public ReviewScoringService(
         IReviewRepository review,
@@ -28,8 +30,10 @@ public class ReviewScoringService : IReviewScoringService
         IClock clock,
         ISystemSettingService settings,
         INotifier notifier,
-        IDecisionLogger decisions)
+        IDecisionLogger decisions,
+        IContractRepository? contracts = null)
     {
+        _contracts = contracts;
         _decisions = decisions;
         _review = review;
         _masterData = masterData;
@@ -637,6 +641,20 @@ public class ReviewScoringService : IReviewScoringService
                     _ => proposal.Project.Status
                 };
             proposal.Project.UpdatedAt = DateTime.UtcNow;
+
+            // QĐ543 Điều 13.3: chủ nhiệm hoàn tất giao nộp hồ sơ (lưu trữ, quyết toán) trong 60 ngày làm
+            // việc KỂ TỪ NGÀY NGHIỆM THU. Ghi hạn vào báo cáo tổng kết ngay lúc Chủ tịch chốt Đạt — đây
+            // mới đúng mốc; trước 03/10 hạn tính từ lúc Phòng QLKH "tiếp nhận" báo cáo (trước cả buổi họp).
+            if (isAcceptance && decision.Result == ReviewResult.Approved && _contracts != null)
+            {
+                var final = await _contracts.FinalReports.FirstOrDefaultAsync(r => r.ProjectId == decision.ProjectId);
+                if (final != null)
+                {
+                    var days = await _settings.GetIntAsync(
+                        SystemSettingKeys.ArchivalLeadDays, SystemSettingKeys.DefaultArchivalLeadDays);
+                    final.ArchivalDeadline = DeadlineMath.AddWorkingDays(DateOnly.FromDateTime(_clock.UtcNow), days);
+                }
+            }
         }
 
         // Nối mạch project_round (dùng chung logic với CloseRoundAsync qua ReviewRoundFinalizer):
@@ -654,7 +672,7 @@ public class ReviewScoringService : IReviewScoringService
             decision.ProjectId, DecisionTypes.CouncilDecision,
             $"Hội đồng chốt kết luận: {ResultVi(decision.Result)}{scoreText}",
             "CouncilDecision", decision.Id.ToString(),
-            result: decision.Result, reason: decision.CouncilComments, documentNo: "BM04",
+            result: decision.Result, reason: decision.CouncilComments, documentNo: isAcceptance ? "BM12" : "BM04",
             decidedBy: chairUserId, decidedByRole: "Chủ tịch hội đồng",
             decidedAt: decision.FinalizedAt);
 

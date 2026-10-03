@@ -43,6 +43,7 @@ public class ProjectTimelineService : IProjectTimelineService
         var project = await _proposals.Projects
             .IgnoreQueryFilters()
             .Include(p => p.CycleTrack).ThenInclude(ct => ct.Cycle)
+            .Include(p => p.ResearchType)
             .FirstOrDefaultAsync(p => p.Id == projectId)
             ?? throw new KeyNotFoundException("Không tìm thấy đề tài.");
 
@@ -62,13 +63,20 @@ public class ProjectTimelineService : IProjectTimelineService
         await AddSubmissionStageAsync(stages, project);
         await AddRevisionStageAsync(stages, projectId);
         await AddReviewStagesAsync(stages, project.CycleTrackId, projectId);
-        await AddContractStagesAsync(stages, projectId);
-        await AddPlannedStagesAsync(stages, project.Status);
+        // Ứng dụng/triển khai = loại có đơn vị đặt hàng (cờ dùng chung cả hệ thống): 2 kỳ tiến độ, 4 đợt
+        // giải ngân 30–30–30–10. Cơ bản: 1 kỳ tiến độ, giải ngân 1 lần sau nghiệm thu (QĐ543 Điều 10, 16).
+        var isApplied = project.ResearchType?.RequireOrderingUnit == true;
+        await AddContractStagesAsync(stages, projectId, project.Status, isApplied);
+        await AddPlannedStagesAsync(stages, project.Status, isApplied);
 
         // Xếp lại theo thứ tự vòng đời rồi mới tính trạng thái — trạng thái phụ thuộc hạn và ngày
         // thực tế của TỪNG giai đoạn, không phụ thuộc thứ tự, nên tính sau cho gọn.
         dto.Stages = stages.OrderBy(s => s.Order).ToList();
-        foreach (var stage in dto.Stages) Finalize(stage, today);
+        foreach (var stage in dto.Stages)
+        {
+            Finalize(stage, today);
+            stage.Actor ??= ActorOf(stage.Code);
+        }
 
         dto.OverdueCount = dto.Stages.Count(s => s.Status == StageStatus.Overdue);
         return dto;
@@ -345,7 +353,8 @@ public class ProjectTimelineService : IProjectTimelineService
     }
 
     // ── 5→12. Các giai đoạn gắn với hợp đồng ─────────────────────────────────
-    private async Task AddContractStagesAsync(List<ProjectStageDto> stages, Guid projectId)
+    private async Task AddContractStagesAsync(
+        List<ProjectStageDto> stages, Guid projectId, string projectStatus, bool isApplied)
     {
         var contract = await _contracts.Query()
             .Where(c => c.ProjectId == projectId)
@@ -384,43 +393,70 @@ public class ProjectTimelineService : IProjectTimelineService
 
         if (contract is null) return;
 
-        // 6. Báo cáo tiến độ từng kỳ.
+        /*
+         * THỨ TỰ THEO QĐ543 (03/10 — trước đây gom theo LOẠI việc: hết các kỳ tiến độ rồi tới hết các
+         * sản phẩm rồi tới hết các đợt giải ngân, nên người xem không thấy cái gì mở ra cái gì):
+         *
+         *   Ký HĐ (40) → [Ứng dụng] Giải ngân đợt 1 (41)
+         *   → Tiến độ kỳ 1 (50) → [Ứng dụng] Giải ngân đợt 2 (52)
+         *   → Tiến độ kỳ 2 (54) → [Ứng dụng] Giải ngân đợt 3 (56)
+         *   → Sản phẩm cam kết (74) → Báo cáo tổng kết (80) → Chấm (82) + họp nghiệm thu (83)
+         *   → Giải ngân đợt CUỐI (85: đợt 4 ứng dụng / 100% cơ bản)
+         *   → Giao nộp, lưu trữ hồ sơ (88) → Quyết toán, thanh lý BM13 (90)
+         *
+         * Căn cứ: Điều 16.1 (đợt 1 sau ký, đợt 2–3 sau tiến độ giai đoạn 1–2 "Đạt", đợt 4 sau nghiệm
+         * thu "Đạt"), Điều 16.2 (cơ bản 1 lần sau nghiệm thu), Điều 11.1 (hồ sơ nghiệm thu = báo cáo
+         * tổng kết + sản phẩm cam kết), Điều 13 (sau nghiệm thu: giao nộp hồ sơ, Phòng QLKH ký BM13).
+         */
+        static int ProgressOrder(int round) => Math.Min(50 + 4 * (round - 1), 70);
+
+        // 6. Báo cáo tiến độ từng kỳ — XONG khi hội đồng tiến độ đã kết luận (đợt giải ngân kế tiếp
+        // mở theo kết luận đó), không phải khi chủ nhiệm vừa nộp.
         var reports = await _contracts.ProgressReports
             .Where(r => r.ContractId == contract.Id)
             .OrderBy(r => r.ReportRound)
-            .Select(r => new { r.Id, r.ReportRound, r.DueDate, r.SubmittedAt })
+            .Select(r => new
+            {
+                r.Id, r.ReportRound, r.RoundName, r.DueDate, r.SubmittedAt,
+                r.EvaluatedAt, r.EvaluationResult, r.ScheduledMeetingAt
+            })
             .ToListAsync();
 
-        var order = 50;
         foreach (var r in reports)
         {
+            var ky = string.IsNullOrWhiteSpace(r.RoundName) ? $"kỳ {r.ReportRound}" : r.RoundName;
+            var meeting = r.ScheduledMeetingAt is { } m
+                ? $" · họp hội đồng tiến độ {m.AddHours(7):HH:mm dd/MM/yyyy}" : "";
             stages.Add(new ProjectStageDto
             {
                 Code = StageCodes.ProgressReport,
-                Order = order++,
+                Order = ProgressOrder(r.ReportRound),
                 Deadline = r.DueDate is { } due ? Fmt(due) : null,
                 DeadlineSource = r.DueDate is null ? StageDeadlineSource.NotSet : StageDeadlineSource.Contract,
-                DeadlineBasis = $"Báo cáo tiến độ kỳ {r.ReportRound} (BM06)",
-                ActualDate = Fmt(r.SubmittedAt),
+                DeadlineBasis = r.SubmittedAt is null
+                    ? $"Chủ nhiệm nộp báo cáo tiến độ (BM06){meeting}"
+                    : $"Đã nộp {r.SubmittedAt.Value.AddHours(7):dd/MM/yyyy} — chờ Hội đồng đánh giá tiến độ kết luận{meeting}",
+                ActualDate = Fmt(r.EvaluatedAt),
+                Suffix = r.EvaluationResult is null ? ky : $"{ky} — {StatusText.Vi(r.EvaluationResult)}",
                 EntityType = "ProgressReport",
                 EntityId = r.Id.ToString()
             });
         }
 
-        // 7. Nộp sản phẩm.
+        // 7. Sản phẩm cam kết — thuộc HỒ SƠ NGHIỆM THU (Điều 11.1.a), nộp được bất cứ lúc nào trong
+        // thời gian hợp đồng nhưng phải đủ trước khi nghiệm thu, nên đứng ngay trước báo cáo tổng kết.
         var deliverables = await _contracts.Deliverables
             .Where(d => d.ProjectId == projectId)
             .OrderBy(d => d.DueDate)
             .Select(d => new { d.Id, d.ProductName, d.DueDate, d.SubmittedAt })
             .ToListAsync();
 
-        order = 60;
         foreach (var d in deliverables)
         {
             stages.Add(new ProjectStageDto
             {
                 Code = StageCodes.Deliverable,
-                Order = order++,
+                Order = 74,
                 Deadline = d.DueDate is { } due ? Fmt(due) : null,
                 DeadlineSource = d.DueDate is null ? StageDeadlineSource.NotSet : StageDeadlineSource.Contract,
                 DeadlineBasis = d.ProductName,
@@ -430,34 +466,48 @@ public class ProjectTimelineService : IProjectTimelineService
             });
         }
 
-        // 8. Giải ngân — CỐ Ý không có hạn: đợt mở khoá theo ĐIỀU KIỆN (nghiệm thu sản phẩm, duyệt
-        // báo cáo tiến độ), không theo ngày. Bịa một ngày ở đây là nói dối trên màn hình.
+        // 8. Giải ngân — CỐ Ý không có hạn: đợt mở khoá theo ĐIỀU KIỆN, không theo ngày. Mỗi đợt đứng
+        // ngay sau đúng cái điều kiện mở nó (xem sơ đồ ở trên).
         var tranches = await _contracts.Disbursements
             .Where(t => t.ContractId == contract.Id)
             .OrderBy(t => t.RoundNumber)
-            .Select(t => new { t.Id, t.RoundNumber, t.ConditionDescription, t.DisbursedAt })
+            .Select(t => new { t.Id, t.RoundNumber, t.Percentage, t.ConditionDescription, t.DisbursedAt })
             .ToListAsync();
+        var lastTranche = tranches.Count == 0 ? 0 : tranches.Max(t => t.RoundNumber);
 
-        order = 70;
         foreach (var t in tranches)
         {
+            var isFinal = t.RoundNumber == lastTranche;
+            var order = isFinal ? 85
+                : !isApplied ? 45
+                : t.RoundNumber == 1 ? 41
+                : ProgressOrder(t.RoundNumber - 1) + 2;
+            // Đợt chưa đủ điều kiện mở (Điều 16) thì vẽ là "chưa tới", không phải "đang làm" — cùng luật
+            // với DisbursementService.LockReason: chưa ký / tiến độ kỳ trước chưa Đạt / chưa nghiệm thu Đạt.
+            var locked = t.DisbursedAt is null && (
+                contract.SignedAt is null
+                || (isFinal && projectStatus != ProjectStatus.Completed)
+                || (isApplied && !isFinal && t.RoundNumber >= 2
+                    && reports.FirstOrDefault(r => r.ReportRound == t.RoundNumber - 1)?.EvaluationResult != "PASS"));
             stages.Add(new ProjectStageDto
             {
                 Code = StageCodes.Disbursement,
-                Order = order++,
+                Order = order,
+                IsPlanned = locked,
                 DeadlineSource = StageDeadlineSource.NotSet,
                 DeadlineBasis = t.ConditionDescription,
                 ActualDate = Fmt(t.DisbursedAt),
+                Suffix = $"đợt {t.RoundNumber} · {t.Percentage:0.##}%",
                 EntityType = "Disbursement",
                 EntityId = t.Id.ToString()
             });
         }
 
-        // 9 + 12. Báo cáo tổng kết và lưu trữ hồ sơ.
+        // 9. Báo cáo tổng kết.
         var final = await _contracts.FinalReports
             .Where(f => f.ProjectId == projectId)
             .OrderByDescending(f => f.SubmittedAt)
-            .Select(f => new { f.Id, f.Deadline, f.SubmittedAt, f.FinalSubmittedAt, f.ArchivalDeadline })
+            .Select(f => new { f.Id, f.Deadline, f.SubmittedAt, f.FinalSubmittedAt, f.ArchivalDeadline, f.ArchivedAt })
             .FirstOrDefaultAsync();
 
         stages.Add(new ProjectStageDto
@@ -474,40 +524,46 @@ public class ProjectTimelineService : IProjectTimelineService
             EntityId = (final?.Id ?? contract.Id).ToString()
         });
 
-        // 11. Quyết toán / thanh lý (BM13).
+        var accepted = projectStatus == ProjectStatus.Completed;
+        var archivalDays = await ArchivalLeadAsync();
+
+        // 12. Giao nộp + lưu trữ hồ sơ — SAU nghiệm thu (Điều 13.1), hạn 60 ngày làm việc kể từ ngày
+        // nghiệm thu (13.3). Trước 03/10 hạn tính từ lúc tiếp nhận báo cáo tổng kết và đứng SAU thanh lý.
+        stages.Add(new ProjectStageDto
+        {
+            Code = StageCodes.Archival,
+            Order = 88,
+            Deadline = final?.ArchivalDeadline is { } ad ? Fmt(ad) : null,
+            DeadlineSource = final?.ArchivalDeadline is null ? StageDeadlineSource.NotSet : StageDeadlineSource.RuleQd543,
+            DeadlineBasis = $"QĐ543 Điều 13 — sau nghiệm thu, chủ nhiệm nộp bản mềm báo cáo đã chỉnh sửa, báo cáo tóm tắt, " +
+                            $"sản phẩm công bố và chứng từ kinh phí; hoàn tất trong {archivalDays} ngày làm việc kể từ ngày nghiệm thu",
+            ActualDate = Fmt(final?.ArchivedAt),
+            IsPlanned = !accepted && final?.ArchivedAt is null,
+            EntityType = final is null ? "Contract" : "FinalReport",
+            EntityId = (final?.Id ?? contract.Id).ToString()
+        });
+
+        // 13. Quyết toán, thanh lý (BM13) — bước cuối cùng.
         var settlement = await _contracts.Settlements
             .Where(s => s.ContractId == contract.Id)
             .OrderByDescending(s => s.CreatedAt)
             .Select(s => new { s.SettlementDeadline, s.SettlementSignedAt })
             .FirstOrDefaultAsync();
+        var settleBy = settlement?.SettlementDeadline ?? final?.ArchivalDeadline;
 
         stages.Add(new ProjectStageDto
         {
             Code = StageCodes.Settlement,
             Order = 90,
-            Deadline = settlement?.SettlementDeadline is { } sd ? Fmt(sd) : null,
-            DeadlineSource = settlement?.SettlementDeadline is null
-                ? StageDeadlineSource.NotSet
-                : StageDeadlineSource.Contract,
-            DeadlineBasis = "Quyết toán và ký Biên bản thanh lý (BM13)",
+            Deadline = settleBy is { } sd ? Fmt(sd) : null,
+            DeadlineSource = settleBy is null ? StageDeadlineSource.NotSet : StageDeadlineSource.RuleQd543,
+            DeadlineBasis = "Ban Kế toán xác nhận đã quyết toán kinh phí, Phòng QLKH ký Biên bản thanh lý BM13 " +
+                            "(QĐ543 Điều 13.1.e, 13.2) — đóng hợp đồng",
             ActualDate = Fmt(settlement?.SettlementSignedAt),
+            IsPlanned = !accepted && settlement is null,
             EntityType = "Contract",
             EntityId = contract.Id.ToString()
         });
-
-        if (final?.ArchivalDeadline is { } ad)
-        {
-            stages.Add(new ProjectStageDto
-            {
-                Code = StageCodes.Archival,
-                Order = 100,
-                Deadline = Fmt(ad),
-                DeadlineSource = StageDeadlineSource.Derived,
-                DeadlineBasis = $"{await ArchivalLeadAsync()} ngày kể từ khi báo cáo tổng kết được tiếp nhận",
-                EntityType = "FinalReport",
-                EntityId = final.Id.ToString()
-            });
-        }
     }
 
     /// <summary>
@@ -521,7 +577,7 @@ public class ProjectTimelineService : IProjectTimelineService
     /// ĐỨNG SAU nó làm xong — bước bị bỏ qua thật (ví dụ hợp đồng không có đợt giải ngân nào) mà vẫn
     /// hiện "chưa tới" là nói sai. "Nộp bản chỉnh sửa" không có ở đây vì chỉ xảy ra khi hội đồng yêu cầu.</para>
     /// </summary>
-    private async Task AddPlannedStagesAsync(List<ProjectStageDto> stages, string projectStatus)
+    private async Task AddPlannedStagesAsync(List<ProjectStageDto> stages, string projectStatus, bool isApplied)
     {
         if (projectStatus is ProjectStatus.Completed or ProjectStatus.Cancelled or ProjectStatus.Terminated)
         {
@@ -536,32 +592,52 @@ public class ProjectTimelineService : IProjectTimelineService
         {
             (StageCodes.Review, 10, "Phòng QLKH đưa đề tài vào vòng chấm xét duyệt sau khi hết hạn nộp"),
             (StageCodes.ReviewMeeting, 11, "Hội đồng xét duyệt họp sau khi chấm xong (QĐ543 Điều 8.3)"),
-            (StageCodes.ProgressReport, 50, "Phòng QLKH tạo các kỳ báo cáo ở tab Báo cáo tiến độ của hợp đồng (BM06, QĐ543 Điều 10.1)"),
-            (StageCodes.Deliverable, 60, "Các sản phẩm đã đăng ký trong hợp đồng"),
-            (StageCodes.Disbursement, 70, "Theo điều kiện của từng đợt ghi trong hợp đồng"),
+            isApplied
+                ? (StageCodes.Disbursement, 41,
+                    "Đề tài ứng dụng: 4 đợt 30–30–30–10% — đợt 1 ngay sau khi ký hợp đồng, đợt 2–3 sau khi tiến độ " +
+                    "giai đoạn 1–2 Đạt, đợt 4 sau nghiệm thu Đạt (QĐ543 Điều 16.1). Phòng QLKH sinh lịch ở tab Giải ngân")
+                : (StageCodes.Disbursement, 85,
+                    "Đề tài cơ bản: giải ngân 1 lần 100% sau khi hội đồng nghiệm thu Đạt (QĐ543 Điều 16.2)"),
+            (StageCodes.ProgressReport, 50, isApplied
+                ? "Phòng QLKH tạo 2 kỳ ở tab Báo cáo tiến độ của hợp đồng — cuối giai đoạn 1 và 2 (BM06, QĐ543 Điều 10.1)"
+                : "Phòng QLKH tạo 1 kỳ ở tab Báo cáo tiến độ của hợp đồng — giữa thời hạn (BM06, QĐ543 Điều 10.1)"),
+            (StageCodes.Deliverable, 74, "Sản phẩm cam kết trong hợp đồng — nộp đủ trước khi nghiệm thu (QĐ543 Điều 11.1)"),
             (StageCodes.FinalReport, 80, "QĐ543 Điều 11.2.a — nộp ít nhất 30 ngày trước khi kết thúc đề tài"),
             (StageCodes.AcceptanceReview, 82, "Chấm nghiệm thu sau khi báo cáo tổng kết được tiếp nhận"),
             (StageCodes.AcceptanceMeeting, 83, "Hội đồng nghiệm thu họp sau khi chấm xong"),
-            (StageCodes.Settlement, 90, "Quyết toán và ký Biên bản thanh lý (BM13) sau khi nghiệm thu đạt"),
-            (StageCodes.Archival, 100, $"{archivalDays} ngày kể từ khi báo cáo tổng kết được tiếp nhận"),
+            (StageCodes.Archival, 88, $"Sau nghiệm thu Đạt — hoàn tất trong {archivalDays} ngày làm việc (QĐ543 Điều 13)"),
+            (StageCodes.Settlement, 90, "Quyết toán và ký Biên bản thanh lý (BM13) — bước cuối cùng"),
         };
 
         var doneOrders = stages.Where(s => s.ActualDate is not null).Select(s => s.Order).ToList();
         var lastDoneOrder = doneOrders.DefaultIfEmpty(0).Max();
-        // Báo cáo tiến độ (50), sản phẩm (60), giải ngân (70) chạy SONG SONG trong thời gian hợp đồng —
-        // một sản phẩm nộp xong KHÔNG có nghĩa đã bỏ qua báo cáo tiến độ. Với ba bước này chỉ coi là
-        // "đã bị vượt qua" khi đã sang hẳn giai đoạn sau (báo cáo tổng kết trở đi, order >= 80).
-        // Trước 01/10 so với bước xong muộn nhất nên hợp đồng có 1 sản phẩm nộp sớm là mất luôn dòng
-        // "Báo cáo tiến độ" trên lộ trình.
+        // Tiến độ, sản phẩm, giải ngân giữa kỳ (41–79) chạy SONG SONG trong thời gian hợp đồng — một sản
+        // phẩm nộp sớm KHÔNG có nghĩa đã bỏ qua báo cáo tiến độ. Với các bước này chỉ coi là "đã bị vượt
+        // qua" khi đã sang hẳn giai đoạn nghiệm thu (order >= 80).
         var lastDoneAfterExecution = doneOrders.Where(o => o >= 80).DefaultIfEmpty(0).Max();
 
         foreach (var (code, order, basis) in planned)
         {
-            var passedBy = order is >= 50 and < 80 ? lastDoneAfterExecution : lastDoneOrder;
+            var passedBy = order is >= 41 and < 80 ? lastDoneAfterExecution : lastDoneOrder;
             if (order <= passedBy || stages.Any(s => s.Code == code)) continue;
-            stages.Add(new ProjectStageDto { Code = code, Order = order, DeadlineBasis = basis, IsPlanned = true });
+            stages.Add(new ProjectStageDto
+            {
+                Code = code, Order = order, DeadlineBasis = basis, IsPlanned = true,
+                // Kỳ tiến độ CHƯA được tạo thì việc đầu tiên là của Phòng QLKH (tạo kỳ), chưa phải của PI.
+                Actor = code == StageCodes.ProgressReport ? StageActors.Staff : null
+            });
         }
     }
+
+    /// <summary>Ai làm bước này — để lộ trình nói được "giờ tới lượt ai".</summary>
+    private static string ActorOf(string code) => code switch
+    {
+        StageCodes.ProposalSubmission or StageCodes.Revision or StageCodes.ProgressReport
+            or StageCodes.Deliverable or StageCodes.FinalReport or StageCodes.Archival => StageActors.Pi,
+        StageCodes.Review or StageCodes.ReviewMeeting
+            or StageCodes.AcceptanceReview or StageCodes.AcceptanceMeeting => StageActors.Council,
+        _ => StageActors.Staff
+    };
 
     private async Task<int> FinalReportLeadAsync() => await _settings.GetIntAsync(
         SystemSettingKeys.FinalReportLeadDays, SystemSettingKeys.DefaultFinalReportLeadDays);

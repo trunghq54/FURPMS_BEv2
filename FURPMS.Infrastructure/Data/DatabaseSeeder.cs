@@ -1084,7 +1084,7 @@ public class DatabaseSeeder
                 Key = SystemSettingKeys.ArchivalLeadDays,
                 Value = SystemSettingKeys.DefaultArchivalLeadDays.ToString(),
                 RecommendedValue = SystemSettingKeys.DefaultArchivalLeadDays.ToString(),
-                Description = "Số ngày để hoàn tất lưu trữ hồ sơ sau khi nộp báo cáo tổng kết."
+                Description = "Số NGÀY LÀM VIỆC để hoàn tất giao nộp, lưu trữ hồ sơ kể từ ngày nghiệm thu (QĐ543 Điều 13.3)."
             },
             new SystemSetting
             {
@@ -1129,6 +1129,17 @@ public class DatabaseSeeder
             var recommended = SystemSettingKeys.DefaultCouncilAllowRespondOnBehalf.ToString().ToLowerInvariant();
             if (respondOnBehalf.RecommendedValue != recommended)
                 respondOnBehalf.RecommendedValue = recommended;
+        }
+
+        // 03/10: hạn lưu trữ đổi nghĩa thành 60 NGÀY LÀM VIỆC kể từ nghiệm thu (Điều 13.3). DB cũ còn
+        // giá trị mặc định cũ 90 thì chuyển theo; Admin đã tự đặt số khác thì giữ nguyên.
+        var archival = await _db.SystemSettings.FirstOrDefaultAsync(s => s.Key == SystemSettingKeys.ArchivalLeadDays);
+        if (archival != null && archival.RecommendedValue == "90")
+        {
+            if (archival.Value == "90") archival.Value = SystemSettingKeys.DefaultArchivalLeadDays.ToString();
+            archival.RecommendedValue = SystemSettingKeys.DefaultArchivalLeadDays.ToString();
+            archival.Description = "Số NGÀY LÀM VIỆC để hoàn tất giao nộp, lưu trữ hồ sơ kể từ ngày nghiệm thu (QĐ543 Điều 13.3).";
+            await _db.SaveChangesAsync();
         }
 
         var existing = await _db.SystemSettings.Select(s => s.Key).ToListAsync();

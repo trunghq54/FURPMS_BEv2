@@ -198,7 +198,7 @@ public class ProgressReportEvaluationTests
     /// Chủ nhiệm phải được BÁO kết quả đánh giá.
     /// <para>
     /// Trước 14/08 hệ thống im lặng: PI nộp xong không biết đã được duyệt chưa, mà kết quả
-    /// "Không đạt" / "Đạt có điều kiện" thì họ phải biết ngay để còn kịp khắc phục — kỳ sau chỉ
+    /// "Không đạt" thì họ phải biết ngay để còn kịp khắc phục — kỳ sau chỉ
     /// mở khi kỳ trước đã có kết quả.
     /// </para>
     /// </summary>
@@ -237,7 +237,72 @@ public class ProgressReportEvaluationTests
         Assert.Equal("NORMAL", sent[0].Priority);
     }
 
-    /// <summary>Kết quả đánh giá chỉ có 3 giá trị theo BM06 — "ACHIEVED" không nằm trong đó.</summary>
+    /// <summary>03/10: chỉ còn Đạt / Không đạt — QĐ543 không có mức "Đạt có điều kiện".</summary>
+    [Fact]
+    public async Task Evaluate_Conditional_NoLongerAccepted()
+    {
+        var (db, report) = await SeedSubmittedReportAsync(reportFileUrl: null, withAttachment: true);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            MakeService(db).EvaluateAsync(report.Id,
+                new EvaluateProgressReportRequest { EvaluationResult = "CONDITIONAL" }, Guid.NewGuid()));
+    }
+
+    /// <summary>Mở lại kết luận: báo cáo về "Đã nộp", sổ quyết định giữ lý do, PI được báo.</summary>
+    [Fact]
+    public async Task Reopen_Evaluated_BackToSubmitted_LogsReason()
+    {
+        var (db, report) = await SeedSubmittedReportAsync(reportFileUrl: null, withAttachment: true);
+        var service = MakeService(db);
+        await service.EvaluateAsync(report.Id, new EvaluateProgressReportRequest { EvaluationResult = "FAIL" }, Guid.NewGuid());
+
+        var result = await service.ReopenAsync(report.Id, "Ghi nhầm kết luận", Guid.NewGuid());
+
+        Assert.Equal(ProgressReportStatus.Submitted, result.Status);
+        Assert.Null(result.EvaluationResult);
+        var log = Assert.Single(db.ProjectDecisions.Where(x => x.DecisionType == DecisionTypes.ResultReopened));
+        Assert.Equal("Ghi nhầm kết luận", log.Reason);
+    }
+
+    [Fact]
+    public async Task Reopen_NotEvaluated_Throws()
+    {
+        var (db, report) = await SeedSubmittedReportAsync(reportFileUrl: null, withAttachment: true);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            MakeService(db).ReopenAsync(report.Id, "Lý do", Guid.NewGuid()));
+    }
+
+    /// <summary>Staff xoá được bản ĐÃ NỘP (nộp nhầm) nhưng phải có lý do; PI thì không.</summary>
+    [Fact]
+    public async Task Delete_Submitted_StaffWithReason_Succeeds_PiCannot()
+    {
+        var (db, report) = await SeedSubmittedReportAsync(reportFileUrl: null, withAttachment: true);
+        var piId = await db.Projects.Select(p => p.PiUserId).FirstAsync();
+        var service = MakeService(db);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.DeleteAsync(report.Id, piId, isStaff: false));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.DeleteAsync(report.Id, Guid.NewGuid(), isStaff: true));
+
+        await service.DeleteAsync(report.Id, Guid.NewGuid(), isStaff: true, reason: "Nộp nhầm kỳ");
+        Assert.False(await db.ProgressReports.AnyAsync(r => r.Id == report.Id));
+        Assert.Single(db.ProjectDecisions.Where(x => x.DecisionType == DecisionTypes.ResultReopened));
+    }
+
+    /// <summary>Dán link thiếu "https://" thì tự thêm, không bắt PI gõ lại (03/10).</summary>
+    [Fact]
+    public async Task Update_LinkWithoutScheme_IsNormalized()
+    {
+        var (db, report) = await SeedSubmittedReportAsync(reportFileUrl: null, withAttachment: true);
+        var piId = await db.Projects.Select(p => p.PiUserId).FirstAsync();
+
+        var result = await MakeService(db).UpdateAsync(report.Id,
+            new UpdateProgressReportRequest { CompletedContent = "x", ReportFileUrl = "drive.google.com/file/d/abc" }, piId);
+
+        Assert.Equal("https://drive.google.com/file/d/abc", result.ReportFileUrl);
+    }
+
+    /// <summary>Kết quả đánh giá chỉ có Đạt / Không đạt — "ACHIEVED" không nằm trong đó.</summary>
     [Fact]
     public async Task Evaluate_InvalidResult_Throws()
     {

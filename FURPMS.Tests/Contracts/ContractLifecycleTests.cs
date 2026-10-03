@@ -855,6 +855,114 @@ public class ContractLifecycleTests
         Assert.Equal("PENDING", (await db.ContractDisbursements.FindAsync(tranches[2].Id))!.Status);
     }
 
+    // ── 03/10: sửa sai lịch giải ngân — sinh lại / huỷ xác nhận, luôn kèm lý do ──
+
+    /// <summary>
+    /// Lỗi deploy 03/10: hợp đồng sinh lịch lúc loại đề tài chưa đánh dấu Ứng dụng ⇒ 1 đợt 100% "sau
+    /// nghiệm thu", kẹt mãi. Sửa loại đề tài rồi bấm "Sinh lại" phải ra đủ 4 đợt 30–30–30–10.
+    /// </summary>
+    [Fact]
+    public async Task Regenerate_AfterTypeFixed_GivesFourAppliedTranches_AndLogsReason()
+    {
+        var (db, tranches) = await SeedThreeTranchesAsync("IN_PROGRESS");
+        var contractId = tranches[0].ContractId;
+        var rt = db.ResearchTypes.Single();
+        rt.RequireOrderingUnit = true;          // Admin sửa lại: đây là đề tài ứng dụng
+        await db.SaveChangesAsync();
+
+        var result = (await MakeDisbursementService(db).RegenerateAsync(contractId, "Loại đề tài cấu hình sai", Guid.NewGuid())).ToList();
+
+        Assert.Equal(new[] { 30m, 30m, 30m, 10m }, result.Select(r => r.Percentage));
+        Assert.Equal(1_000_000m, result.Sum(r => r.PlannedAmount));
+        // Đợt 1 mở ngay sau ký; đợt 2 chờ tiến độ kỳ 1; đợt 4 chờ nghiệm thu.
+        Assert.Null(result[0].LockReason);
+        Assert.Contains("tiến độ kỳ 1", result[1].LockReason);
+        Assert.Contains("nghiệm thu", result[3].LockReason);
+        var log = Assert.Single(db.ProjectDecisions.Where(x => x.DecisionType == DecisionTypes.ResultReopened));
+        Assert.Equal("Loại đề tài cấu hình sai", log.Reason);
+    }
+
+    [Fact]
+    public async Task Regenerate_WhenATrancheAlreadyPaid_Throws()
+    {
+        var (db, tranches) = await SeedThreeTranchesAsync("IN_PROGRESS");
+        tranches[0].Status = "DISBURSED";
+        await db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            MakeDisbursementService(db).RegenerateAsync(tranches[0].ContractId, "Lý do", Guid.NewGuid()));
+        Assert.Equal(3, db.ContractDisbursements.Count());
+    }
+
+    [Fact]
+    public async Task UndoConfirm_BackToPending_LogsReason_BlockedOnceSettlementExists()
+    {
+        var (db, tranches) = await SeedThreeTranchesAsync("IN_PROGRESS");
+        var service = MakeDisbursementService(db);
+        await service.ConfirmAsync(tranches[0].Id, new Application.DTOs.Contract.ConfirmDisbursementRequest(), Guid.NewGuid());
+
+        var undone = await service.UndoConfirmAsync(tranches[0].Id, "Bấm nhầm đợt", Guid.NewGuid());
+        Assert.Equal("PENDING", undone.Status);
+        Assert.Null(undone.DisbursedAt);
+        Assert.Contains(db.ProjectDecisions, x => x.DecisionType == DecisionTypes.ResultReopened && x.Reason == "Bấm nhầm đợt");
+
+        await service.ConfirmAsync(tranches[0].Id, new Application.DTOs.Contract.ConfirmDisbursementRequest(), Guid.NewGuid());
+        db.ContractSettlements.Add(new ContractSettlement { ContractId = tranches[0].ContractId });
+        await db.SaveChangesAsync();
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.UndoConfirmAsync(tranches[0].Id, "Lý do", Guid.NewGuid()));
+    }
+
+    // ── 03/10: quyết toán sửa được trước khi ký, huỷ ký có lý do ──
+    [Fact]
+    public async Task Settlement_UpdateBeforeSign_UnsignWithReason_DeleteUnsigned()
+    {
+        var (db, tranches) = await SeedThreeTranchesAsync("COMPLETED");
+        var contractId = tranches[0].ContractId;
+        var settlements = TestServices.Settlements(db);
+        var created = new ContractSettlement
+        {
+            ContractId = contractId, TotalContractedAmount = 1, TotalDisbursedAmount = 1,
+            AccountingClearedAt = DateOnly.FromDateTime(DateTime.UtcNow), AssetsClearedAt = DateOnly.FromDateTime(DateTime.UtcNow)
+        };
+        db.ContractSettlements.Add(created);
+        await db.SaveChangesAsync();
+
+        var updated = await settlements.UpdateAsync(created.Id, new Application.DTOs.Settlements.CreateSettlementRequest
+        {
+            TotalContractedAmount = 1_000_000m, TotalDisbursedAmount = 1_000_000m, Notes = "Đã sửa"
+        });
+        Assert.Equal(1_000_000m, updated.TotalDisbursedAmount);
+
+        var signer = MakeUser();
+        db.Users.Add(signer);
+        await db.SaveChangesAsync();
+        await settlements.SignAsync(created.Id, new Application.DTOs.Settlements.SignSettlementRequest { SideASigneeId = signer.Id });
+        Assert.Equal("SETTLED", db.Contracts.Single().Status);
+        // Đã ký thì không sửa / xoá được nữa.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => settlements.UpdateAsync(created.Id,
+            new Application.DTOs.Settlements.CreateSettlementRequest()));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => settlements.DeleteAsync(created.Id, "x", Guid.NewGuid()));
+
+        var unsigned = await settlements.UnsignAsync(created.Id, "Ký nhầm ngày", Guid.NewGuid());
+        Assert.Null(unsigned.SettlementSignedAt);
+        Assert.Equal("ACTIVE", db.Contracts.Single().Status);
+
+        await settlements.DeleteAsync(created.Id, "Lập lại số liệu", Guid.NewGuid());
+        Assert.Empty(db.ContractSettlements);
+        Assert.Equal(2, db.ProjectDecisions.Count(x => x.DecisionType == DecisionTypes.ResultReopened));
+    }
+
+    /// <summary>QĐ543 Điều 13.3 — 60 ngày LÀM VIỆC: bỏ thứ Bảy, Chủ nhật.</summary>
+    [Fact]
+    public void AddWorkingDays_SkipsWeekends()
+    {
+        var friday = new DateOnly(2026, 10, 2);
+        Assert.Equal(new DateOnly(2026, 10, 5), Application.Common.DeadlineMath.AddWorkingDays(friday, 1));
+        Assert.Equal(new DateOnly(2026, 10, 9), Application.Common.DeadlineMath.AddWorkingDays(friday, 5));
+        Assert.Equal(new DateOnly(2026, 12, 25), Application.Common.DeadlineMath.AddWorkingDays(friday, 60));
+    }
+
     /// <summary>Các đợt TRƯỚC đợt cuối vẫn chi bình thường — luật chỉ gác đúng đợt cuối.</summary>
     [Fact]
     public async Task Confirm_EarlierTranche_BeforeAcceptance_Succeeds()

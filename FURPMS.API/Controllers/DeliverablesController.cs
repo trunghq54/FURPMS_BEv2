@@ -82,11 +82,13 @@ public class DeliverablesController : ControllerBase
         return Ok(ApiResponse<DeliverableResponse>.Ok(result, "Đã cập nhật sản phẩm."));
     }
 
+    // Sản phẩm đã nộp minh chứng vẫn xoá được nhưng phải kèm ?reason= (ghi vào sổ quyết định).
     [HttpDelete("{id:int}")]
     [Authorize(Roles = "Admin,Staff")]
-    public async Task<IActionResult> Delete(int id)
+    public async Task<IActionResult> Delete(int id, [FromQuery] string? reason = null)
     {
-        await _service.DeleteAsync(id);
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        await _service.DeleteAsync(id, reason, userId);
         return Ok(ApiResponse.Ok("Đã xoá sản phẩm."));
     }
 }

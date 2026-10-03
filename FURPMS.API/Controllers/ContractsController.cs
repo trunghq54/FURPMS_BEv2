@@ -135,6 +135,17 @@ public class ContractsController : ControllerBase
         return Ok(ApiResponse<IEnumerable<DisbursementResponse>>.Ok(result));
     }
 
+    // Sinh lại lịch giải ngân theo loại đề tài (chưa đợt nào đã chi) — kèm lý do, ghi sổ quyết định.
+    [ProducesResponseType(typeof(ApiResponse<IEnumerable<DisbursementResponse>>), StatusCodes.Status200OK)]
+    [HttpPost("{contractId:guid}/disbursements/regenerate")]
+    [Authorize(Roles = "Admin,Staff")]
+    public async Task<IActionResult> RegenerateDisbursements(Guid contractId, [FromBody] DisbursementFixRequest request)
+    {
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var result = await _disbursements.RegenerateAsync(contractId, request.Reason, userId);
+        return Ok(ApiResponse<IEnumerable<DisbursementResponse>>.Ok(result, "Đã sinh lại lịch giải ngân."));
+    }
+
     // ── Deliverables ──────────────────────────────────────────────────────────
 
     [ProducesResponseType(typeof(ApiResponse<IEnumerable<DeliverableResponse>>), StatusCodes.Status200OK)]

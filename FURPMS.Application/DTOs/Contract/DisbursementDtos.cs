@@ -27,6 +27,19 @@ public class DisbursementResponse
     public bool IsBlockedByDeliverable { get; set; }
     /// <summary>Đã có ít nhất một file hợp đồng/chứng từ làm minh chứng cho lần xác nhận này.</summary>
     public bool HasEvidence { get; set; }
+
+    /// <summary>
+    /// Vì sao đợt này CHƯA được giải ngân theo QĐ543 Điều 16 (chưa ký HĐ / chờ tiến độ kỳ k Đạt / chờ
+    /// nghiệm thu Đạt…). <c>null</c> = đủ điều kiện. Trước 03/10 màn hình chỉ biết điều kiện sản phẩm
+    /// nên đợt 2–3 (mở theo báo cáo tiến độ) lúc nào cũng hiện "Đang chờ", không nói chờ cái gì.
+    /// </summary>
+    public string? LockReason { get; set; }
+}
+
+/// <summary>Staff sinh lại lịch giải ngân / huỷ một lần xác nhận đã chi — luôn kèm lý do.</summary>
+public class DisbursementFixRequest
+{
+    public string Reason { get; set; } = "";
 }
 
 /// <summary>Staff gắn / gỡ sản phẩm minh chứng cho một đợt giải ngân. <c>null</c> = gỡ.</summary>

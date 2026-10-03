@@ -108,4 +108,15 @@ public class FinalReportsController : ControllerBase
         var result = await _service.ArchiveAsync(id, staffId);
         return Ok(ApiResponse<FinalReportDto>.Ok(result));
     }
+
+    // POST /api/final-reports/{id}/reopen — mở lại báo cáo đã tiếp nhận/lưu trữ, lý do bắt buộc.
+    [ProducesResponseType(typeof(ApiResponse<FinalReportDto>), StatusCodes.Status200OK)]
+    [HttpPost("{id:guid}/reopen")]
+    [Authorize(Roles = "Admin,Staff")]
+    public async Task<IActionResult> Reopen(Guid id, [FromBody] FURPMS.Application.DTOs.Contract.DisbursementFixRequest request)
+    {
+        var staffId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var result = await _service.ReopenAsync(id, request.Reason, staffId);
+        return Ok(ApiResponse<FinalReportDto>.Ok(result, "Đã mở lại báo cáo tổng kết."));
+    }
 }

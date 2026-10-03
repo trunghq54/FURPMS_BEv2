@@ -144,7 +144,9 @@ public class AnalyticsController : ControllerBase
                 .CountAsync(sc => councilIds.Contains(sc.CouncilId) && sc.SubmittedAt != null);
             var accepted = await _db.AcceptanceEvaluations
                 .CountAsync(e => councilIds.Contains(e.CouncilId) && e.SubmittedAt != null);
-            var completed = scored + accepted;
+            // Nghiệm thu: mỗi thành viên nộp 1 phiếu BM11 (Đạt/Không đạt); phản biện nộp THÊM phiếu
+            // nhận xét BM10 — cộng cả hai thì phiên nghiệm thu "xong" vượt số phiếu cần thu.
+            var completed = r.RoundType == "ACCEPTANCE" ? accepted : scored + accepted;
 
             reviewProgress.Add(new
             {
@@ -272,8 +274,10 @@ public class AnalyticsController : ControllerBase
             .ToListAsync();
 
         // Điểm TB mỗi hội đồng (điểm/phiếu chỉ để tham khảo — rule #12).
+        // Chỉ phiếu chấm XÉT DUYỆT (thang điểm BM03). Phiếu nhận xét nghiệm thu (BM10) chấm theo
+        // mức 1–5, gộp chung thì điểm TB hội đồng trộn hai thang khác nhau.
         var scores = await _db.ProposalReviewScores
-            .Where(s => s.SubmittedAt != null)
+            .Where(s => s.SubmittedAt != null && s.Template.TemplateType == "REVIEW")
             .Select(s => new { s.CouncilId, Total = s.ScoreDetails.Sum(d => d.GivenScore) })
             .ToListAsync();
         var councilPerformance = scores

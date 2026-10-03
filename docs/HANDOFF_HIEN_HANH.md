@@ -217,6 +217,117 @@ Thầy góp ý: cán bộ phòng không có chuyên môn để cho Đạt/Không
   đã có kết luận; `StatusBadge` tô màu PASS/CONDITIONAL/FAIL.
 - **Số 0 đứng đầu** ("05"): sửa chung trong `components/ui/input.tsx` — xem chi tiết dưới.
 
+### 1.4q 🔴 Luồng sau vòng 1 theo QĐ543: giải ngân, lộ trình, quyết toán, lưu trữ (03/10, lần 3)
+
+- **Lỗi deploy:** đề tài ứng dụng chỉ có 1 đợt giải ngân, báo "Đợt 1 là đợt giải ngân CUỐI".
+  - **Gốc:** lịch giải ngân chỉ sinh MỘT lần, theo cờ `ResearchType.RequireOrderingUnit`. Loại "Ứng dụng" trên
+    deploy (tạo tay) nhiều khả năng chưa tick cờ ⇒ bị coi là Cơ bản ⇒ 1 đợt 100% sau nghiệm thu, và không có
+    đường sinh lại.
+  - **Sửa:**
+    - Ô cờ ở Admin → Loại đề tài đổi tên thành "Đề tài ứng dụng / triển khai", kèm dòng nói rõ hệ quả (2 kỳ tiến
+      độ, 4 đợt 30–30–30–10).
+    - Thêm `POST /api/contracts/{id}/disbursements/regenerate` (lý do bắt buộc; chặn khi đã có đợt chi). Nút
+      "Sinh lại lịch" ở tab Giải ngân.
+  - **Việc phải làm trên deploy:** Admin tick ô đó cho loại Ứng dụng → Staff mở HD-2026-XD-002 → tab Giải ngân →
+    "Sinh lại lịch".
+- **Khoá đợt giải ngân:** `DisbursementService.LockReason` là luật duy nhất cho cả hiển thị (`lockReason` trong
+  DTO) lẫn chặn API.
+  - Chưa ký HĐ → không đợt nào chi được.
+  - Đợt cuối chỉ chi sau nghiệm thu Đạt.
+  - Đợt giữa (đề tài ứng dụng) chỉ chi khi tiến độ kỳ trước đó Đạt.
+  - Trước đây FE chỉ biết điều kiện sản phẩm, nên đợt 2–3 luôn hiện "Đang chờ" mà không nói chờ gì.
+  - Thêm `POST /api/disbursements/{id}/undo` để huỷ một lần "đã chi" bấm nhầm; chặn khi đã lập quyết toán.
+- **Lộ trình (`ProjectTimelineService`)** xếp XEN KẼ theo Điều 16, thay vì gom theo loại việc:
+  - Ký HĐ (40) → đợt 1 (41) → tiến độ kỳ k (50+4(k−1)) → đợt k+1 (+2).
+  - → sản phẩm (74) → tổng kết (80) → chấm (82) / họp nghiệm thu (83).
+  - → đợt cuối (85) → giao nộp, lưu trữ (88) → quyết toán, thanh lý BM13 (90).
+  - DTO thêm `Actor` (PI/STAFF/COUNCIL) và `Suffix` ("kỳ 1 — Đạt", "đợt 2 · 30%").
+  - Đợt chưa đủ điều kiện hiện "chưa tới".
+  - FE có khung "Việc tiếp theo" ghi luôn ai làm.
+  - Bỏ khối thẻ `ContractMilestoneTimeline` ở chi tiết hợp đồng và trang tiến trình PI (lệch thứ tự, lặp nội
+    dung); trang đề tài của Staff vẫn giữ.
+- **Lưu trữ (Điều 13):**
+  - Hạn = **60 ngày LÀM VIỆC kể từ ngày nghiệm thu**. `DeadlineMath.AddWorkingDays`; được đặt khi Chủ tịch chốt
+    nghiệm thu Đạt (`ReviewScoringService` nhận thêm `IContractRepository?` tuỳ chọn).
+  - Trước đây là 90 ngày lịch tính từ lúc tiếp nhận báo cáo tổng kết.
+  - Seeder tự đổi `ARCHIVAL_LEAD_DAYS` từ 90 → 60 nếu vẫn là mặc định cũ.
+  - Lưu trữ chỉ làm được khi đề tài COMPLETED.
+  - Sổ quyết định của nghiệm thu nay ghi BM12 (trước ghi nhầm BM04); lưu trữ ghi BM09.
+- **Quyết toán:**
+  - Form tự điền:
+    - Giá trị hợp đồng.
+    - Đã giải ngân = tổng các đợt ĐÃ CHI (số thực chi, không có thì số kế hoạch). Trước ra 0 vì chỉ cộng số
+      thực chi.
+    - Sản phẩm đã Đạt.
+  - Ô tiền dùng `MoneyInput`. Hạn tự lấy từ hạn lưu trữ.
+  - Thêm `PUT` / `DELETE ?reason=` (khi chưa ký) và `POST /api/settlements/{id}/unsign` (huỷ ký BM13, hợp đồng về
+    ACTIVE).
+- **Báo cáo tổng kết:**
+  - Staff không phải tạo gì; tab hiện hạn (ngày kết thúc − 30) và danh mục hồ sơ nghiệm thu (Điều 11.1).
+  - `POST /api/final-reports/{id}/reopen` cho báo cáo đã tiếp nhận / lưu trữ (lý do bắt buộc).
+- **Tạo kỳ báo cáo tiến độ** tự đặt lịch họp hội đồng tiến độ = hạn nộp + 5 ngày làm việc, 9h (VN). Đổi được ở
+  "Đặt lịch họp".
+- Mọi thao tác sửa sai đều ghi `RESULT_REOPENED` kèm lý do.
+- Toast của báo cáo tổng kết, quyết toán và giải ngân trước đây là tiếng Anh cứng, nay qua i18n.
+- Test: 429 pass. Mới có:
+  - Sinh lại 4 đợt sau khi sửa loại.
+  - Chặn sinh lại khi đã chi.
+  - Undo.
+  - Sửa / huỷ ký / xoá quyết toán.
+  - Ngày làm việc.
+- Ảnh: `anh_giao_dien_moi/64`–`75`.
+- **PI xem chứng từ giải ngân (lần 4):**
+  - Trước đây `DisbursementEvidenceController` chỉ cho Admin/Staff, mà thông báo "đã giải ngân" lại bảo PI vào xem
+    minh chứng ⇒ 403. PI cũng không có màn nào hiện lịch giải ngân.
+  - Nay chủ nhiệm của ĐÚNG hợp đồng được xem và tải; tải lên vẫn chỉ Staff.
+  - Tải file phải thuộc đúng đợt (chặn ghép mã đợt của mình với mã file của đề tài khác).
+  - Trang Tiến trình đề tài của PI có thêm phần Giải ngân chỉ xem. Ảnh `76`.
+
+### 1.4p Báo cáo tiến độ & sản phẩm: sửa sai sau khi đã chốt, upload không còn "lỗi mạng" (03/10)
+
+- **Upload file bị "lỗi mạng" trên deploy.**
+  - Nguyên nhân: `axiosClient` cắt mọi request sau 15 giây. File đi trình duyệt → Railway → Cloudinary nên
+    file vài MB trên mạng yếu là quá hạn. Dán link thì không sao.
+  - Sửa: interceptor gặp `FormData` thì nâng hạn lên `UPLOAD_TIMEOUT_MS` = 5 phút.
+- **Link báo cáo tiến độ không còn bắt gõ `https://`.**
+  - `ProgressReportService.UpdateAsync` tự thêm scheme khi thiếu, giống sản phẩm và báo cáo tổng kết vốn đã làm.
+- **Bỏ "Đạt có điều kiện" ở kết luận tiến độ:** chỉ còn PASS/FAIL.
+  - QĐ543 Điều 16.1.b chỉ hỏi "Đạt" để giải ngân đợt sau.
+  - "Không đạt" KHÔNG chấm dứt hợp đồng: nó giữ đợt giải ngân lại; đình chỉ hay gia hạn là việc Hiệu trưởng
+    quyết theo Điều 10.3. Dialog có dòng nhắc điều này.
+  - Dữ liệu cũ CONDITIONAL vẫn hiển thị đúng nhãn.
+- **Tạo kỳ báo cáo:**
+  - Nút chính "Tạo N kỳ theo quy định" (Điều 10.1: Ứng dụng 2 kỳ, Cơ bản 1 kỳ) kèm dòng trích quy định.
+  - Ô số kỳ chỉ hiện khi bấm "Tùy chỉnh số kỳ".
+  - Đủ kỳ theo quy định thì nút tạo tự ẩn.
+- **Sửa sai sau khi chốt.** Lý do luôn bắt buộc (`ReasonDialog`) và vào sổ quyết định với loại mới
+  `RESULT_REOPENED`.
+  - **Báo cáo tiến độ đã có kết luận:** nút "Mở lại" (`POST /api/progress-reports/{id}/reopen`) đưa kỳ về
+    "Đã nộp" và báo PI. BE chặn nếu kết luận Đạt đã dùng để chi đợt kế tiếp.
+  - **Báo cáo đã nộp, chưa có kết luận:** Staff xoá được với `DELETE ?reason=`; PI vẫn chỉ xoá bản nháp.
+  - **Sản phẩm:**
+    - FE trước đây KHÔNG có sửa/xoá dù BE có `PUT`/`DELETE` → nay có nút bút chì (sửa tên/hạn tại chỗ) và nút
+      thùng rác.
+    - Đã nộp minh chứng thì xoá phải ghi lý do. Đã Đạt thì khoá.
+    - "Sửa đánh giá" Đạt → Không đạt nay khoá lại đợt giải ngân đã mở nhờ sản phẩm đó (trước bị treo cờ). Đợt
+      đã chi thì chặn.
+- **Thống kê:** điểm TB hội đồng chỉ tính phiếu XÉT DUYỆT; tiến độ phiên nghiệm thu chỉ đếm phiếu BM11.
+- Ảnh: `anh_giao_dien_moi/57`–`63`.
+
+### 1.4o Bộ tiêu chí: tab Xét duyệt / Nghiệm thu, bộ nghiệm thu chấm mức 1–5, đổi tên được (03/10)
+
+- `RubricCriteriaPage` có 2 tab theo loại phiên, thay cho bộ lọc "loại vòng".
+  - Mỗi tab có dòng giải thích phiếu: BM03 cộng đủ 100 / BM10 chấm mức 1–5.
+- **Bộ NGHIỆM THU** (`RubricTemplatesController`):
+  - Admin chỉ nhập tên nội dung; BE đặt trần = 5 (điểm lưu chính là mức).
+  - `MaxTotalScore` tự bằng tổng trần các nội dung đang bật (`SyncAcceptanceTotal`), không còn luật "cộng 100".
+  - Bộ cũ 4 × 25 vẫn chạy vì màn chấm và biên bản quy về mức theo tỉ lệ trần/5.
+- **Đổi tên bộ:** bút chì cạnh tên. BE nay cho đổi tên kể cả khi bộ đã có phiếu, vì tên chỉ là nhãn quản lý.
+  Loại đề tài áp dụng và tiêu chí vẫn khoá.
+- Bộ đã có phiếu: badge "Đã dùng chấm (N phiếu)"; nút sửa/xoá tiêu chí ẩn đi kèm dòng giải thích dùng "Sao chép".
+- **Form phản biện chấm:** mức hiện "4 — Tốt"; đầu phiếu là "Nội dung đã chấm k/n" thay cho "x/100".
+- Test: `RubricTemplatesControllerTests` (3 test).
+
 ### 1.4n Biên bản hội đồng: xuất BM04/BM12 + PI và Staff xem trên trang đề tài (03/10)
 
 - **Xuất Word:** `DocumentExportService.ExportMinutesDocAsync(councilId, projectId)`, theo loại phiên.

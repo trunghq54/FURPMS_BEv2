@@ -54,7 +54,96 @@ public class DisbursementService : IDisbursementService
             .ToListAsync();
         var evidenceIds = evidenceIdList.ToHashSet();
 
-        return items.Select(x => Map(x, evidenceIds.Contains(x.Id.ToString())));
+        var ctx = await LoadLockContextAsync(contractId);
+        return items.Select(x =>
+        {
+            var dto = Map(x, evidenceIds.Contains(x.Id.ToString()));
+            if (x.Status != DisbursementStatus.Disbursed && ctx != null) dto.LockReason = LockReason(x, ctx);
+            return dto;
+        });
+    }
+
+    /// <summary>
+    /// Sinh lại lịch giải ngân (03/10). Lịch chỉ sinh MỘT lần: hợp đồng sinh lịch lúc loại đề tài còn
+    /// cấu hình sai (chưa đánh dấu Ứng dụng), hay trước bản sửa 01/10, là kẹt mãi ở 1 đợt 100% "sau
+    /// nghiệm thu" — đúng lỗi bạn nhóm gặp trên deploy: đề tài ứng dụng mà "Đợt 1 là đợt CUỐI".
+    /// Chỉ cho khi CHƯA đợt nào đã chi; minh chứng đã tải của các đợt cũ bị gỡ theo. Ghi sổ quyết định.
+    /// </summary>
+    public async Task<IEnumerable<DisbursementResponse>> RegenerateAsync(Guid contractId, string reason, Guid staffId)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException("Sinh lại lịch giải ngân phải ghi lý do.");
+
+        var contract = await _contracts.Query()
+            .Include(c => c.Project)
+            .Include(c => c.Disbursements)
+            .FirstOrDefaultAsync(c => c.Id == contractId)
+            ?? throw new KeyNotFoundException("Không tìm thấy hợp đồng.");
+
+        if (contract.Disbursements.Any(d => d.Status == DisbursementStatus.Disbursed))
+            throw new InvalidOperationException(
+                "Đã có đợt được đánh dấu đã chi — không sinh lại cả lịch được. Huỷ xác nhận đợt đó trước nếu bấm nhầm.");
+
+        var oldIds = contract.Disbursements.Select(d => d.Id.ToString()).ToList();
+        var oldCount = contract.Disbursements.Count;
+        var evidence = await _documents.Query()
+            .Where(x => x.EntityType == "Disbursement" && oldIds.Contains(x.EntityId) && !x.IsDeleted)
+            .ToListAsync();
+        foreach (var doc in evidence) { doc.IsDeleted = true; _documents.Update(doc); }
+        _contracts.RemoveDisbursementsRange(contract.Disbursements.ToList());
+        await _documents.SaveChangesAsync();
+        await _contracts.SaveChangesAsync();
+
+        var tranches = await GenerateFromTemplateAsync(contract);
+        _contracts.AddDisbursementsRange(tranches);
+
+        _decisions.Log(
+            contract.ProjectId, DecisionTypes.ResultReopened,
+            $"Sinh lại lịch giải ngân hợp đồng {contract.ContractNumber}: {oldCount} đợt → {tranches.Count} đợt",
+            "Contract", contract.Id.ToString(),
+            result: "REGENERATED", reason: reason.Trim(), decidedBy: staffId, decidedByRole: "Phòng QLKH");
+        await _contracts.SaveChangesAsync();
+
+        return await GetByContractAsync(contractId);
+    }
+
+    /// <summary>
+    /// Huỷ "đã giải ngân" bấm nhầm (03/10) — đợt về Chờ, giữ minh chứng đã tải. Chặn khi đã lập hồ sơ
+    /// thanh lý: số "đã chi" đã chép sang biên bản, phải xoá/huỷ ký thanh lý trước.
+    /// </summary>
+    public async Task<DisbursementResponse> UndoConfirmAsync(int disbursementId, string reason, Guid staffId)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException("Huỷ xác nhận giải ngân phải ghi lý do.");
+
+        var d = await _contracts.Disbursements
+            .Include(x => x.Deliverable)
+            .Include(x => x.Contract)
+            .FirstOrDefaultAsync(x => x.Id == disbursementId)
+            ?? throw new KeyNotFoundException("Không tìm thấy đợt giải ngân.");
+
+        if (d.Status != DisbursementStatus.Disbursed)
+            throw new InvalidOperationException("Đợt này chưa được đánh dấu đã chi nên không có gì để huỷ.");
+        if (await _contracts.Settlements.AnyAsync(s => s.ContractId == d.ContractId))
+            throw new InvalidOperationException(
+                "Hợp đồng đã lập hồ sơ quyết toán — xoá hồ sơ quyết toán trước rồi mới huỷ xác nhận giải ngân.");
+
+        d.Status = DisbursementStatus.Pending;
+        d.DisbursedAt = null;
+        d.ProcessedBy = null;
+        _decisions.Log(
+            d.Contract.ProjectId, DecisionTypes.ResultReopened,
+            $"Huỷ xác nhận đã giải ngân đợt {d.RoundNumber}",
+            "ContractDisbursement", d.Id.ToString(),
+            result: "REOPENED", reason: reason.Trim(), decidedBy: staffId, decidedByRole: "Phòng QLKH");
+        await _contracts.SaveChangesAsync();
+
+        var hasEvidence = await _documents.Query().AnyAsync(x =>
+            x.EntityType == "Disbursement" && x.EntityId == d.Id.ToString() && !x.IsDeleted);
+        var dto = Map(d, hasEvidence);
+        var ctx = await LoadLockContextAsync(d.ContractId);
+        if (ctx != null) dto.LockReason = LockReason(d, ctx);
+        return dto;
     }
 
     public async Task<DisbursementResponse> LinkDeliverableAsync(int disbursementId, LinkDeliverableRequest request)
@@ -189,8 +278,8 @@ public class DisbursementService : IDisbursementService
                 $"Đã xác nhận giải ngân đợt {d.RoundNumber}",
                 $"Đợt giải ngân số {d.RoundNumber} của hợp đồng {piInfo.ContractNumber} " +
                 $"(đề tài \"{piInfo.Title}\") đã được đánh dấu đã chi. " +
-                "Bạn có thể xem minh chứng ở tab Tiến trình của hợp đồng.",
-                actionUrl: "/contracts",
+                "Xem chứng từ ở mục Tiến trình đề tài → phần Giải ngân của hợp đồng.",
+                actionUrl: "/my-timeline",
                 entityType: "Contract",
                 entityId: d.ContractId.ToString());
         }
@@ -209,53 +298,75 @@ public class DisbursementService : IDisbursementService
     /// </summary>
     private async Task AssertMilestoneUnlockedAsync(ContractDisbursement d)
     {
-        var tranches = await _contracts.Disbursements
-            .Where(x => x.ContractId == d.ContractId)
-            .Select(x => x.RoundNumber)
-            .ToListAsync();
+        var ctx = await LoadLockContextAsync(d.ContractId);
+        if (ctx == null) return;
+        // Điều kiện sản phẩm đã chặn riêng ở ConfirmAsync (thông báo cụ thể hơn) — ở đây chỉ mốc QĐ543.
+        var reason = LockReason(d, ctx, includeDeliverable: false);
+        if (reason != null)
+            throw new InvalidOperationException($"Chưa thể xác nhận giải ngân đợt {d.RoundNumber}: {reason}");
+    }
 
+    private sealed record LockContext(
+        DateTime? SignedAt, string ProjectStatus, bool IsApplied,
+        List<int> Rounds, Dictionary<int, string?> ProgressResults);
+
+    private async Task<LockContext?> LoadLockContextAsync(Guid contractId)
+    {
         var contract = await _contracts.Query()
-            .Where(c => c.Id == d.ContractId)
+            .Where(c => c.Id == contractId)
             .Select(c => new
             {
                 c.SignedAt,
                 ProjectStatus = c.Project.Status,
-                c.Project.TitleVi,
                 IsApplied = c.Project.ResearchType.RequireOrderingUnit
             })
             .FirstOrDefaultAsync();
-        if (contract == null) return;
+        if (contract == null) return null;
 
-        // Điều 16.1.a: đợt đầu của đề tài ứng dụng chỉ mở SAU KHI ký hợp đồng. Áp cho mọi loại để một
-        // hợp đồng còn chờ ký không thể có bất kỳ mốc nào bị ghi nhận là đã chi.
-        if (contract.SignedAt == null)
-            throw new InvalidOperationException(
-                $"Hợp đồng của đề tài \"{contract.TitleVi}\" chưa được ghi nhận đã ký — chưa thể xác nhận giải ngân đợt {d.RoundNumber}.");
+        var rounds = await _contracts.Disbursements
+            .Where(x => x.ContractId == contractId)
+            .Select(x => x.RoundNumber)
+            .ToListAsync();
+        var progress = await _contracts.ProgressReports
+            .Where(r => r.ContractId == contractId)
+            .Select(r => new { r.ReportRound, r.EvaluationResult })
+            .ToListAsync();
+        return new LockContext(contract.SignedAt, contract.ProjectStatus, contract.IsApplied, rounds,
+            progress.GroupBy(p => p.ReportRound).ToDictionary(g => g.Key, g => g.First().EvaluationResult));
+    }
 
-        var isFinal = !tranches.Any(n => n > d.RoundNumber);
-        // Điều 16.2: đề tài CƠ BẢN chỉ có đúng một đợt 100% SAU nghiệm thu Đạt. Vì vậy một đợt vẫn là
-        // đợt cuối thật sự, không phải "tạm ứng khởi động" như logic cũ từng giả định.
-        if (isFinal && contract.ProjectStatus != ProjectStatus.Completed)
-            throw new InvalidOperationException(
-                $"Đợt {d.RoundNumber} là đợt giải ngân CUỐI — theo QĐ543 chỉ được xác nhận sau khi đề tài " +
-                $"được hội đồng nghiệm thu công nhận Đạt. Đề tài đang ở trạng thái \"{StatusText.Vi(contract.ProjectStatus)}\".");
+    /// <summary>
+    /// Đợt này đang chờ điều kiện gì theo QĐ543 Điều 16 — <c>null</c> = đủ điều kiện giải ngân.
+    /// Một luật duy nhất cho cả lúc HIỂN THỊ (vì sao chưa mở) và lúc XÁC NHẬN (chặn API).
+    /// <list type="bullet">
+    /// <item>Mọi đợt: hợp đồng phải đã ký (Điều 16.1.a).</item>
+    /// <item>Đợt CUỐI (đợt 4 ứng dụng; đợt duy nhất của đề tài cơ bản): sau nghiệm thu Đạt (16.1.c, 16.2).</item>
+    /// <item>Đợt giữa của đề tài ứng dụng: báo cáo tiến độ kỳ trước đó phải được kết luận Đạt (16.1.b).</item>
+    /// </list>
+    /// </summary>
+    private static string? LockReason(ContractDisbursement d, LockContext ctx, bool includeDeliverable = true)
+    {
+        if (ctx.SignedAt == null)
+            return "hợp đồng chưa được ghi nhận đã ký (QĐ543 Điều 16.1.a).";
 
-        // Điều 16.1.b–c: đợt 2/3 của đề tài ứng dụng lần lượt phụ thuộc kết quả Đạt của báo cáo tiến độ
-        // giai đoạn 1/2. Trước đây ConditionDescription chỉ để hiển thị, API vẫn cho bấm xác nhận bất kỳ lúc nào.
-        if (contract.IsApplied && d.RoundNumber is 2 or 3)
+        var isFinal = !ctx.Rounds.Any(n => n > d.RoundNumber);
+        if (isFinal && ctx.ProjectStatus != ProjectStatus.Completed)
+            return $"đây là đợt giải ngân CUỐI — theo QĐ543 chỉ giải ngân sau khi hội đồng nghiệm thu Đạt " +
+                   $"(đề tài đang \"{StatusText.Vi(ctx.ProjectStatus)}\").";
+
+        if (ctx.IsApplied && !isFinal && d.RoundNumber >= 2)
         {
-            var requiredReportRound = d.RoundNumber - 1;
-            var progressResult = await _contracts.ProgressReports
-                .Where(r => r.ContractId == d.ContractId && r.ReportRound == requiredReportRound)
-                .Select(r => r.EvaluationResult)
-                .FirstOrDefaultAsync();
-            if (!string.Equals(progressResult, "PASS", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException(
-                    $"Chưa thể xác nhận giải ngân đợt {d.RoundNumber}: báo cáo tiến độ giai đoạn {requiredReportRound} " +
-                    $"phải được Phòng QLKH đánh giá Đạt trước (hiện: {StatusText.Vi(progressResult ?? "chưa có kết quả")}).");
+            var need = d.RoundNumber - 1;
+            ctx.ProgressResults.TryGetValue(need, out var result);
+            if (!string.Equals(result, "PASS", StringComparison.OrdinalIgnoreCase))
+                return $"chờ hội đồng tiến độ kết luận Đạt cho báo cáo tiến độ kỳ {need} " +
+                       $"(QĐ543 Điều 16.1.b; hiện: {StatusText.Vi(result ?? "chưa có kết quả")}).";
         }
 
-        // Các mốc ở giữa không có điều kiện khác ngoài báo cáo tương ứng ở trên.
+        if (includeDeliverable && d.Deliverable is not null && d.Deliverable.AcceptanceStatus != AcceptanceStatus.Passed)
+            return $"sản phẩm minh chứng \"{d.Deliverable.ProductName}\" chưa nghiệm thu Đạt.";
+
+        return null;
     }
 
     /// <summary>

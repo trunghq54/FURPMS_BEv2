@@ -72,6 +72,23 @@ public class ProjectStageDto
     /// <summary>Mở đúng bản ghi gốc — ví dụ <c>ReviewRound</c> + id để FE dẫn tới màn tương ứng.</summary>
     public string? EntityType { get; set; }
     public string? EntityId { get; set; }
+
+    /// <summary>
+    /// AI phải làm bước này: <c>PI</c> (chủ nhiệm), <c>STAFF</c> (Phòng QLKH), <c>COUNCIL</c> (hội đồng).
+    /// Thêm 03/10 — người dùng cần biết "giờ tới lượt ai", không chỉ "giờ tới bước gì".
+    /// </summary>
+    public string? Actor { get; set; }
+
+    /// <summary>Phân biệt các bước lặp: "kỳ 1 — Đạt", "đợt 2 · 30%". Tiếng Việt, FE in sau tên bước.</summary>
+    public string? Suffix { get; set; }
+}
+
+/// <summary>Ai làm bước nào trên lộ trình.</summary>
+public static class StageActors
+{
+    public const string Pi = "PI";
+    public const string Staff = "STAFF";
+    public const string Council = "COUNCIL";
 }
 
 /// <summary>Hạn của giai đoạn lấy từ đâu.</summary>

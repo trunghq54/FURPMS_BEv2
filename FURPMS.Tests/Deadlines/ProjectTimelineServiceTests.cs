@@ -193,7 +193,9 @@ public class ProjectTimelineServiceTests
 
         Assert.Null(stage.Deadline);
         Assert.Equal(StageDeadlineSource.NotSet, stage.DeadlineSource);
-        Assert.Equal(StageStatus.NoDeadline, stage.Status);
+        // Đợt DUY NHẤT là đợt cuối ⇒ chỉ mở sau nghiệm thu Đạt (Điều 16.2). Đề tài chưa nghiệm thu nên
+        // đợt này hiện "chưa tới" (03/10) — trước đây vẽ như đang làm dù chưa thể giải ngân.
+        Assert.Equal(StageStatus.NotStarted, stage.Status);
         // Vẫn phải nói được ĐIỀU KIỆN mở khoá, nếu không thì dòng này vô nghĩa.
         Assert.Equal("Sau khi ký hợp đồng", stage.DeadlineBasis);
     }
@@ -329,13 +331,17 @@ public class ProjectTimelineServiceTests
 
         var dto = await MakeSvc(db, ClockAtToday()).GetAsync(project.Id, piId, Array.Empty<string>());
 
+        // Thứ tự theo QĐ543 (03/10): đề tài CƠ BẢN giải ngân 1 lần sau nghiệm thu (Điều 16.2) nên bước
+        // giải ngân đứng sau họp nghiệm thu; giao nộp lưu trữ (Điều 13.1) trước thanh lý BM13 (13.2).
         Assert.Equal(new[]
         {
             StageCodes.ProposalSubmission, StageCodes.Review, StageCodes.ReviewMeeting,
             StageCodes.ContractSigning, StageCodes.ProgressReport, StageCodes.Deliverable,
-            StageCodes.Disbursement, StageCodes.FinalReport, StageCodes.AcceptanceReview,
-            StageCodes.AcceptanceMeeting, StageCodes.Settlement, StageCodes.Archival
+            StageCodes.FinalReport, StageCodes.AcceptanceReview, StageCodes.AcceptanceMeeting,
+            StageCodes.Disbursement, StageCodes.Archival, StageCodes.Settlement
         }, dto.Stages.Select(s => s.Code));
+        Assert.Equal(StageActors.Pi, dto.Stages.Single(s => s.Code == StageCodes.FinalReport).Actor);
+        Assert.Equal(StageActors.Council, dto.Stages.Single(s => s.Code == StageCodes.AcceptanceMeeting).Actor);
 
         // Mọi bước sau "Nộp đề cương" đều là dự kiến: không bịa hạn, có ghi điều kiện mở.
         Assert.All(dto.Stages.Skip(1), s =>

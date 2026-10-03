@@ -148,13 +148,29 @@ public class ProgressReportsController : ControllerBase
         return Ok(ApiResponse<ProgressReportDto>.Ok(result));
     }
 
-    // Xoá kỳ báo cáo tạo nhầm — chỉ bản NHÁP. Đã nộp là căn cứ trong hồ sơ nghiệm thu.
+    // Mở lại kết luận đã ghi — bắt buộc lý do, ghi vào sổ quyết định.
+    [ProducesResponseType(typeof(ApiResponse<ProgressReportDto>), StatusCodes.Status200OK)]
+    [HttpPost("{id:guid}/reopen")]
+    [Authorize(Roles = "Admin,Staff")]
+    public async Task<IActionResult> Reopen(Guid id, [FromBody] ReopenRequest request)
+    {
+        var staffId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var result = await _service.ReopenAsync(id, request.Reason, staffId);
+        return Ok(ApiResponse<ProgressReportDto>.Ok(result, "Đã mở lại kết luận."));
+    }
+
+    // Xoá kỳ báo cáo: PI chỉ bản NHÁP; Phòng QLKH xoá được cả bản đã nộp (kèm ?reason=).
     [HttpDelete("{id:guid}")]
-    public async Task<IActionResult> Delete(Guid id)
+    public async Task<IActionResult> Delete(Guid id, [FromQuery] string? reason = null)
     {
         var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
         var isStaff = User.IsInRole("Admin") || User.IsInRole("Staff");
-        await _service.DeleteAsync(id, userId, isStaff);
+        await _service.DeleteAsync(id, userId, isStaff, reason);
         return Ok(ApiResponse.Ok("Đã xoá kỳ báo cáo."));
     }
+}
+
+public class ReopenRequest
+{
+    public string Reason { get; set; } = "";
 }

@@ -144,7 +144,7 @@ public class DeliverableService : IDeliverableService
     /// đã nộp minh chứng · đã nghiệm thu · đang là điều kiện của một đợt giải ngân.
     /// Cái cuối nguy nhất: xoá đi là đợt giải ngân mất căn cứ mở, không ai truy lại được vì sao.
     /// </summary>
-    public async Task DeleteAsync(int deliverableId)
+    public async Task DeleteAsync(int deliverableId, string? reason = null, Guid? staffId = null)
     {
         var d = await _contracts.Deliverables
             .FirstOrDefaultAsync(x => x.Id == deliverableId)
@@ -152,12 +152,21 @@ public class DeliverableService : IDeliverableService
 
         if (d.AcceptanceStatus == AcceptanceStatus.Passed)
             throw new InvalidOperationException(
-                $"Sản phẩm \"{d.ProductName}\" đã nghiệm thu ĐẠT — không xoá được.");
+                $"Sản phẩm \"{d.ProductName}\" đã nghiệm thu ĐẠT — sửa kết quả sang Không đạt trước rồi mới xoá được.");
 
+        // Đã nộp minh chứng: trước 03/10 khoá hẳn, sản phẩm tạo sai là kẹt mãi. Nay cho xoá nhưng
+        // bắt ghi lý do và lưu vào sổ quyết định — bản nộp của PI là chứng cứ, không được mất dấu.
         if (d.SubmittedAt != null)
-            throw new InvalidOperationException(
-                $"Sản phẩm \"{d.ProductName}\" đã được nộp minh chứng — không xoá được. " +
-                "Nếu nộp nhầm, đánh giá Không đạt để chủ nhiệm nộp lại.");
+        {
+            if (string.IsNullOrWhiteSpace(reason))
+                throw new ArgumentException(
+                    $"Sản phẩm \"{d.ProductName}\" đã được nộp minh chứng — xoá thì phải ghi lý do.");
+            _decisions.Log(
+                d.ProjectId, DecisionTypes.ResultReopened,
+                $"Phòng QLKH xoá sản phẩm \"{d.ProductName}\" đã nộp minh chứng",
+                "ProjectDeliverable", d.Id.ToString(),
+                result: "DELETED", reason: reason.Trim(), decidedBy: staffId, decidedByRole: "Phòng QLKH");
+        }
 
         var linkedTranche = await _contracts.Disbursements
             .Where(x => x.DeliverableId == deliverableId)
@@ -221,6 +230,23 @@ public class DeliverableService : IDeliverableService
 
         if (deliverable.Contract == null)
             throw new InvalidOperationException("Deliverable chưa được gắn vào hợp đồng nào — không thể nghiệm thu theo hợp đồng.");
+
+        // Sửa kết quả từ ĐẠT sang KHÔNG ĐẠT (chấm nhầm): đợt giải ngân đã được mở nhờ sản phẩm này
+        // phải khoá lại — trước 03/10 cờ "đủ điều kiện" vẫn treo đó. Đợt đã CHI tiền thì không cho sửa.
+        if (deliverable.AcceptanceStatus == AcceptanceStatus.Passed && request.AcceptanceStatus == AcceptanceStatus.Failed)
+        {
+            var opened = await _contracts.Disbursements.Where(x => x.DeliverableId == deliverableId).ToListAsync();
+            var paid = opened.FirstOrDefault(x => x.Status == DisbursementStatus.Disbursed);
+            if (paid != null)
+                throw new InvalidOperationException(
+                    $"Sản phẩm \"{deliverable.ProductName}\" là căn cứ của đợt giải ngân {paid.RoundNumber} đã chi — " +
+                    "không đổi kết quả sang Không đạt được.");
+            foreach (var t in opened)
+            {
+                t.ConditionMetAt = null;
+                t.ConditionMetBy = null;
+            }
+        }
 
         deliverable.AcceptanceStatus = request.AcceptanceStatus;
         deliverable.QualityAssessment = request.QualityAssessment;

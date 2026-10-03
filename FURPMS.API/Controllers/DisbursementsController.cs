@@ -42,4 +42,15 @@ public class DisbursementsController : ControllerBase
         var result = await _service.LinkDeliverableAsync(id, request);
         return Ok(ApiResponse<DisbursementResponse>.Ok(result));
     }
+
+    /// <summary>Huỷ một lần "đánh dấu đã giải ngân" bấm nhầm — lý do bắt buộc.</summary>
+    [ProducesResponseType(typeof(ApiResponse<DisbursementResponse>), StatusCodes.Status200OK)]
+    [HttpPost("{id:int}/undo")]
+    [Authorize(Roles = "Admin,Staff")]
+    public async Task<IActionResult> Undo(int id, [FromBody] DisbursementFixRequest request)
+    {
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var result = await _service.UndoConfirmAsync(id, request.Reason, userId);
+        return Ok(ApiResponse<DisbursementResponse>.Ok(result, "Đã huỷ xác nhận giải ngân."));
+    }
 }
