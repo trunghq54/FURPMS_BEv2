@@ -23,4 +23,7 @@ public interface IDocumentExportService
     /// phiên. Bản nháp không xuất được.
     /// </summary>
     Task<(byte[] Content, string FileName)> ExportMinutesDocAsync(Guid councilId, Guid? projectId);
+
+    /// <summary>Lý lịch khoa học theo QĐ543 Biểu mẫu 02, từ hồ sơ + danh sách công trình (03/10).</summary>
+    Task<(byte[] Content, string FileName)> ExportAcademicCvDocAsync(Guid userId);
 }

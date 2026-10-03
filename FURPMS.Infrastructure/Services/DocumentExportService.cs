@@ -1069,7 +1069,8 @@ AppendParagraph(body,
             AppendParagraph(body, "4.2. Phụ lục có hiệu lực kể từ ngày hai bên ký.");
             if (a.RequiresRectorApproval)
                 AppendParagraph(body, "4.3. Nội dung điều chỉnh thuộc thẩm quyền phê duyệt của Hiệu trưởng; Phụ lục chỉ có hiệu lực sau khi được Hiệu trưởng phê duyệt.");
-            AppendParagraph(body, "4.4. Phụ lục được thực hiện qua phương thức ký điện tử trên phần mềm Econtract; các bên tự bảo quản và lưu trữ trên thiết bị điện tử của từng Bên./.");
+            // Đánh số liền mạch (03/10): trước đây không có mục 4.3 thì nhảy thẳng 4.2 → 4.4.
+            AppendParagraph(body, $"{(a.RequiresRectorApproval ? "4.4" : "4.3")}. Phụ lục được thực hiện qua phương thức ký điện tử trên phần mềm Econtract; các bên tự bảo quản và lưu trữ trên thiết bị điện tử của từng Bên./.");
             AppendParagraph(body, "");
             AppendParagraph(body, "");
 
@@ -1083,6 +1084,222 @@ AppendParagraph(body,
 
         var contractCode = c.ContractNumber.Replace("/", "-").Replace(" ", "_");
         return (ms.ToArray(), $"PhuLucHopDong_{contractCode}_{a.RequestedAt:yyyyMMdd}.docx");
+    }
+
+    // ── Lý lịch khoa học — QĐ543 Biểu mẫu 02 (03/10) ─────────────────────────────────────────
+    //
+    // Hồ sơ đã có đủ phần lớn BM02 (mục 1–8 từ tài khoản + lý lịch, mục 13–19 từ danh sách công trình)
+    // nhưng chưa xuất ra được — muốn nộp kèm đề cương vẫn phải chép tay sang Word. Mục 9–12 (đào tạo,
+    // khoá học khác, ngoại ngữ, quá trình công tác) hệ thống không lưu ⇒ để dòng trống đúng mẫu cho
+    // người khai điền tay, không bịa. Không in căn cước / tài khoản ngân hàng (BM02 không có các mục đó).
+    public async Task<(byte[] Content, string FileName)> ExportAcademicCvDocAsync(Guid userId)
+    {
+        var profile = await _masterData.AcademicProfiles
+            .IgnoreQueryFilters()
+            .Include(p => p.User).ThenInclude(u => u.Unit)
+            .FirstOrDefaultAsync(p => p.UserId == userId);
+        var works = await _masterData.AcademicWorks
+            .IgnoreQueryFilters()
+            .Include(w => w.User).ThenInclude(u => u.Unit)
+            .Where(w => w.UserId == userId)
+            .OrderBy(w => w.SortOrder).ThenByDescending(w => w.Year)
+            .ToListAsync();
+        var user = profile?.User ?? works.FirstOrDefault()?.User
+            ?? throw new KeyNotFoundException("Người dùng chưa khai lý lịch khoa học — chưa có gì để xuất.");
+        const string Blank = "……………………………";
+        string V(string? s) => string.IsNullOrWhiteSpace(s) ? Blank : s.Trim();
+        List<Domain.Entities.Users.AcademicWork> Of(string type) => works.Where(w => w.WorkType == type).ToList();
+        // Số đếm: lấy từ danh sách công trình; hồ sơ cũ khai SỐ tay mà chưa liệt kê thì dùng số đã khai.
+        int Count(string category) => Math.Max(works.Count(w => w.Category == category), category switch
+        {
+            "ISI_SCOPUS" => profile?.IsiScopusCount ?? 0,
+            "JOURNAL_INTL" => profile?.IntlJournalCount ?? 0,
+            "JOURNAL_DOMESTIC" => profile?.DomesticJournalCount ?? 0,
+            "CONFERENCE_INTL" => profile?.IntlConferenceCount ?? 0,
+            "CONFERENCE_DOMESTIC" => profile?.DomesticConferenceCount ?? 0,
+            "PHD" => profile?.PhdSupervisedCount ?? 0,
+            "MASTER" => profile?.MasterSupervisedCount ?? 0,
+            _ => 0
+        });
+
+        using var ms = new MemoryStream();
+        using (var docx = WordprocessingDocument.Create(ms, WordprocessingDocumentType.Document))
+        {
+            var mainPart = docx.AddMainDocumentPart();
+            mainPart.Document = new Document(new Body());
+            var body = mainPart.Document.Body!;
+
+            AppendHeading(body, "TRƯỜNG ĐẠI HỌC FPT", 13, bold: true, justify: JustificationValues.Center);
+            AppendParagraph(body, "");
+            AppendHeading(body, "LÝ LỊCH KHOA HỌC", 15, bold: true, justify: JustificationValues.Center);
+            AppendParagraph(body, "(Dành cho các cán bộ, giảng viên đăng ký chủ trì và tham gia thực hiện các đề tài KH cấp trường của Trường Đại học FPT)",
+                justify: JustificationValues.Center);
+            AppendParagraph(body, "");
+
+            var gender = profile?.Gender switch { "Male" => "Nam", "Female" => "Nữ", "Other" => "Khác", _ => null };
+            AppendParagraph(body, $"1. Họ và tên: {V(user.FullName)}");
+            AppendParagraph(body, $"2. Năm sinh: {(profile?.DateOfBirth is { } dob ? dob.Year.ToString() : Blank)}    3. Giới tính: {V(gender)}");
+            AppendParagraph(body, $"4. Nơi sinh: {V(profile?.Hometown)}");
+            AppendParagraph(body, $"5. Nguyên quán: {V(profile?.Hometown)}");
+            AppendParagraph(body, $"6. Địa chỉ liên hệ: Điện thoại: {V(user.Phone)}    Email: {V(user.Email)}");
+            AppendParagraph(body, $"7. Học hàm, học vị: {V(profile?.AcademicTitle)}    Năm được phong GS/PGS: " +
+                                  $"{(profile?.GsPgsYear?.ToString() ?? Blank)}    Nơi phong: {V(profile?.GsPgsInstitution)}");
+            AppendParagraph(body, $"8. Đơn vị công tác: Tên đơn vị: {V(profile?.Institution ?? user.Unit?.Name)}    " +
+                                  $"Địa chỉ: {V(profile?.InstitutionAddress)}    Email: {V(user.Email)}");
+            if (!string.IsNullOrWhiteSpace(profile?.Specialization) || !string.IsNullOrWhiteSpace(profile?.SpecializationAreas))
+                AppendParagraph(body, $"Chuyên ngành: {V(profile?.Specialization)}. Hướng nghiên cứu: {V(profile?.SpecializationAreas)}.");
+
+            // Mục 9–12: hệ thống không lưu — giữ khung trống đúng mẫu.
+            AppendParagraph(body, "9. Quá trình đào tạo", bold: true);
+            {
+                int[] w = { 2000, 3200, 2400, 1756 };
+                bool[] c = { false, false, false, true };
+                var t = MinutesTable(body, new[] { "Bậc đào tạo", "Nơi đào tạo", "Chuyên môn", "Năm tốt nghiệp" }, w, c);
+                foreach (var level in new[] { "Đại học", "Thạc sĩ", "Tiến sĩ", "TSKH" })
+                    MinutesRow(t, new[] { level, "", "", "" }, w, c);
+                TableGap(body);
+            }
+            AppendParagraph(body, "10. Các khoá đào tạo khác (nếu có)", bold: true);
+            {
+                int[] w = { 2000, 3000, 2400, 1956 };
+                bool[] c = { false, false, false, false };
+                var t = MinutesTable(body, new[] { "Văn bằng", "Tên khoá đào tạo", "Nơi đào tạo", "Thời gian đào tạo" }, w, c);
+                MinutesRow(t, new[] { "", "", "", "" }, w, c);
+                TableGap(body);
+            }
+            AppendParagraph(body, "11. Trình độ ngoại ngữ", bold: true);
+            {
+                int[] w = { 2600, 3600, 3156 };
+                bool[] c = { false, false, false };
+                var t = MinutesTable(body, new[] { "Tên ngoại ngữ", "Trình độ sử dụng (trung bình, khá, tốt)", "Chứng chỉ" }, w, c);
+                MinutesRow(t, new[] { "", "", "" }, w, c);
+                TableGap(body);
+            }
+            AppendParagraph(body, "12. Quá trình công tác", bold: true);
+            {
+                int[] w = { 2200, 2400, 2600, 2156 };
+                bool[] c = { false, false, false, false };
+                var t = MinutesTable(body, new[] { "Thời gian (từ năm … đến năm …)", "Vị trí công tác", "Cơ quan công tác", "Địa chỉ cơ quan" }, w, c);
+                MinutesRow(t, new[] { "", "", V(profile?.Institution ?? user.Unit?.Name), V(profile?.InstitutionAddress) }, w, c);
+                TableGap(body);
+            }
+
+            AppendParagraph(body, "13. Sách, sách chuyên khảo, giáo trình (Tên tác giả; tên sách, giáo trình; NXB; năm xuất bản)", bold: true);
+            var books = Of(Domain.Entities.Users.WorkTypes.Book);
+            if (books.Count == 0) AppendParagraph(body, $"[1] {Blank}");
+            for (var i = 0; i < books.Count; i++)
+                AppendParagraph(body, $"[{i + 1}] {Join(books[i].Authors, books[i].Title, books[i].Venue, books[i].Year?.ToString())}");
+
+            AppendParagraph(body, "14. Các công trình khoa học đã công bố", bold: true);
+            AppendParagraph(body, $"14.1. Số bài đăng trên các tạp chí quốc tế ISI/SCOPUS: {Count("ISI_SCOPUS")}");
+            AppendParagraph(body, $"14.2. Số bài báo đăng trên các tạp chí quốc tế không thuộc ISI/SCOPUS: {Count("JOURNAL_INTL")}");
+            AppendParagraph(body, $"14.3. Số bài báo đăng trên các tạp chí chuyên ngành trong nước: {Count("JOURNAL_DOMESTIC")}");
+            AppendParagraph(body, $"14.4. Số báo cáo tham gia các Hội nghị khoa học Quốc tế: {Count("CONFERENCE_INTL")}");
+            AppendParagraph(body, $"14.5. Số báo cáo tham gia các Hội nghị khoa học trong nước: {Count("CONFERENCE_DOMESTIC")}");
+            AppendParagraph(body, "14.6. Liệt kê đầy đủ các công bố (tên tác giả, năm xuất bản, tên công trình, tên tạp chí, volume, trang số):");
+            var pubs = Of(Domain.Entities.Users.WorkTypes.Publication);
+            if (pubs.Count == 0) AppendParagraph(body, $"[1] {Blank}");
+            for (var i = 0; i < pubs.Count; i++)
+                AppendParagraph(body, $"[{i + 1}] {Join(pubs[i].Authors, pubs[i].Year?.ToString(), pubs[i].Title, pubs[i].Venue, pubs[i].Volume, pubs[i].Pages)}");
+
+            AppendParagraph(body, "15. Bằng sở hữu trí tuệ đã được cấp", bold: true);
+            {
+                int[] w = { 700, 3900, 1800, 1700, 1256 };
+                bool[] c = { true, false, false, false, true };
+                var t = MinutesTable(body, new[] { "TT", "Tên và nội dung văn bằng", "Số, ký mã hiệu", "Nơi cấp", "Năm cấp" }, w, c);
+                var patents = Of(Domain.Entities.Users.WorkTypes.Patent);
+                if (patents.Count == 0) MinutesRow(t, new[] { "1", "", "", "", "" }, w, c);
+                for (var i = 0; i < patents.Count; i++)
+                    MinutesRow(t, new[] { (i + 1).ToString(), patents[i].Title, patents[i].Identifier ?? "", patents[i].Venue ?? "", patents[i].Year?.ToString() ?? "" }, w, c);
+                TableGap(body);
+            }
+
+            AppendParagraph(body, "16. Sản phẩm được ứng dụng, chuyển giao", bold: true);
+            AppendParagraph(body, $"16.1. Số lượng sản phẩm KH&CN ứng dụng ở nước ngoài: {Count("APPLIED_ABROAD")}");
+            AppendParagraph(body, $"16.2. Số lượng sản phẩm KH&CN ứng dụng trong nước: {Count("APPLIED_DOMESTIC")}");
+            {
+                int[] w = { 700, 3300, 3300, 2056 };
+                bool[] c = { true, false, false, false };
+                var t = MinutesTable(body, new[] { "TT", "Tên sản phẩm", "Thời gian, hình thức, quy mô, địa chỉ áp dụng", "Công dụng" }, w, c);
+                var apps = Of(Domain.Entities.Users.WorkTypes.Application);
+                if (apps.Count == 0) MinutesRow(t, new[] { "1", "", "", "" }, w, c);
+                for (var i = 0; i < apps.Count; i++)
+                    MinutesRow(t, new[] { (i + 1).ToString(), apps[i].Title, Join(apps[i].StartYear?.ToString(), apps[i].Venue), apps[i].Note ?? "" }, w, c);
+                TableGap(body);
+            }
+
+            AppendParagraph(body, "17. Các đề tài KH&CN các cấp đã chủ trì hoặc tham gia", bold: true);
+            foreach (var (label, category) in new[] { ("17.1. Nhiệm vụ KH&CN đã và đang chủ trì", "PROJECT_LEAD"),
+                                                      ("17.2. Nhiệm vụ KH&CN đã và đang tham gia với tư cách thành viên", "PROJECT_MEMBER") })
+            {
+                AppendParagraph(body, label);
+                int[] w = { 3200, 1800, 2400, 1956 };
+                bool[] c = { false, true, false, false };
+                var t = MinutesTable(body, new[] { "Tên nhiệm vụ / Mã số", "Thời gian (bắt đầu – kết thúc)", "Cơ quan quản lý nhiệm vụ", "Tình trạng nhiệm vụ" }, w, c);
+                var items = works.Where(x => x.Category == category).ToList();
+                if (items.Count == 0) MinutesRow(t, new[] { "", "", "", "" }, w, c);
+                foreach (var p in items)
+                    MinutesRow(t, new[]
+                    {
+                        Join(p.Title, p.Identifier),
+                        p.StartYear is { } sy ? $"{sy} – {(p.Year?.ToString() ?? "nay")}" : p.Year?.ToString() ?? "",
+                        p.Venue ?? "",
+                        p.Status switch { "ACCEPTED" => "Đã nghiệm thu", "IN_PROGRESS" => "Chưa nghiệm thu", "FAILED" => "Không hoàn thành", _ => "" }
+                    }, w, c);
+                TableGap(body);
+            }
+
+            AppendParagraph(body, "18. Giải thưởng về KH&CN trong và ngoài nước", bold: true);
+            {
+                int[] w = { 700, 5200, 3456 };
+                bool[] c = { true, false, false };
+                var t = MinutesTable(body, new[] { "TT", "Hình thức và nội dung giải thưởng", "Tổ chức, năm tặng thưởng" }, w, c);
+                var awards = Of(Domain.Entities.Users.WorkTypes.Award);
+                if (awards.Count == 0) MinutesRow(t, new[] { "1", "", "" }, w, c);
+                for (var i = 0; i < awards.Count; i++)
+                    MinutesRow(t, new[] { (i + 1).ToString(), awards[i].Title, Join(awards[i].Venue, awards[i].Year?.ToString()) }, w, c);
+                TableGap(body);
+            }
+
+            AppendParagraph(body, "19. Quá trình tham gia đào tạo SĐH", bold: true);
+            AppendParagraph(body, $"19.1. Số lượng tiến sĩ đã đào tạo: {Count("PHD")}");
+            AppendParagraph(body, $"19.2. Số lượng NCS đang hướng dẫn: {Blank}");
+            AppendParagraph(body, $"19.3. Số lượng thạc sĩ đã đào tạo: {Count("MASTER")}");
+            AppendParagraph(body, "19.4. Thông tin chi tiết:");
+            {
+                int[] w = { 600, 2200, 3000, 1500, 2056 };
+                bool[] c = { true, false, false, false, false };
+                var t = MinutesTable(body, new[] { "TT", "Họ tên NCS / thạc sĩ", "Tên luận án / luận văn", "Vai trò hướng dẫn", "Thời gian đào tạo" }, w, c);
+                var sup = Of(Domain.Entities.Users.WorkTypes.Supervision);
+                if (sup.Count == 0) MinutesRow(t, new[] { "1", "", "", "", "" }, w, c);
+                for (var i = 0; i < sup.Count; i++)
+                    MinutesRow(t, new[]
+                    {
+                        (i + 1).ToString(), sup[i].Authors ?? "", sup[i].Title,
+                        sup[i].Role switch { "MAIN_SUPERVISOR" => "Chính", "CO_SUPERVISOR" => "Phụ", _ => "" },
+                        sup[i].StartYear is { } s0 ? $"{s0} – {(sup[i].Year?.ToString() ?? "nay")}" : sup[i].Year?.ToString() ?? ""
+                    }, w, c);
+                TableGap(body);
+            }
+
+            AppendParagraph(body, "NHỮNG THÔNG TIN KHÁC VỀ CÁC HOẠT ĐỘNG KH&CN", bold: true);
+            AppendParagraph(body, Blank);
+            AppendParagraph(body, "");
+            AppendParagraph(body, $"……, ngày {DateTime.UtcNow.AddHours(7):dd} tháng {DateTime.UtcNow.AddHours(7):MM} năm {DateTime.UtcNow.AddHours(7):yyyy}",
+                justify: JustificationValues.Right);
+            AppendSignatureBlock(body,
+                leftTitle: "XÁC NHẬN CỦA LÃNH ĐẠO ĐƠN VỊ", leftName: null,
+                rightTitle: "NGƯỜI KHAI", rightName: user.FullName,
+                signNote: "(Họ tên và chữ ký)");
+
+            ApplyAdministrativeFormat(mainPart, body);
+        }
+
+        var safe = new string(user.FullName.Where(ch => char.IsLetterOrDigit(ch) || ch == ' ').ToArray()).Trim().Replace(' ', '_');
+        return (ms.ToArray(), $"BM02_LyLichKhoaHoc_{safe}.docx");
+
+        static string Join(params string?[] parts) =>
+            string.Join("; ", parts.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p!.Trim()));
     }
 
     // ── Biên bản họp hội đồng: BM04 (xét duyệt) / BM12 (nghiệm thu) — 03/10 ─────────────────

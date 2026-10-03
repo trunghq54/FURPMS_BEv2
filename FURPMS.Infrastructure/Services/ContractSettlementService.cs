@@ -113,6 +113,17 @@ public class ContractSettlementService : IContractSettlementService
         if (settlement.Contract.Status == ContractStatus.Terminated)
             throw new InvalidOperationException("Hợp đồng đã chấm dứt — không thể ký thanh lý theo luồng hoàn thành bình thường.");
 
+        // QĐ543 Điều 13.2: Phòng QLKH "tập hợp và xác nhận việc nộp sản phẩm của chủ nhiệm" RỒI mới ký BM13.
+        // Trong hệ thống, xác nhận đó chính là bước "Lưu trữ" hồ sơ ở tab Báo cáo tổng kết (bản đã sửa theo
+        // hội đồng nghiệm thu + báo cáo tóm tắt). Trước 03/10 ký được dù chưa lưu trữ — hợp đồng đóng mà
+        // hồ sơ sau nghiệm thu còn thiếu. Lưu trữ nhầm vẫn "Mở lại" được (FinalReportService.ReopenAsync).
+        var archived = await _contracts.FinalReports.AnyAsync(r =>
+            r.ProjectId == settlement.Contract.ProjectId && r.Status == FinalReportStatus.Archived);
+        if (!archived)
+            throw new InvalidOperationException(
+                "Hồ sơ sau nghiệm thu chưa được lưu trữ — vào tab Báo cáo tổng kết, kiểm bản đã chỉnh sửa và bản " +
+                "tóm tắt rồi bấm \"Lưu trữ\" trước khi ký Biên bản thanh lý BM13 (QĐ543 Điều 13.2).");
+
         var signee = await _users.Query().FirstOrDefaultAsync(u => u.Id == request.SideASigneeId)
             ?? throw new KeyNotFoundException("Không tìm thấy người ký.");
 

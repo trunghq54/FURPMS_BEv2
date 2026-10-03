@@ -29,6 +29,39 @@ public class AcademicProfilesController : ControllerBase
         return Ok(ApiResponse<AcademicProfileResponse?>.Ok(profile == null ? null : AcademicProfileResponse.From(profile)));
     }
 
+    /// <summary>
+    /// AI đọc CV / lý lịch khoa học (PDF, DOCX) và trả về các ô ĐIỀN SẴN (03/10). Không ghi gì vào hồ sơ —
+    /// người dùng xem lại trên form rồi tự bấm Lưu; công trình chỉ thêm khi người dùng bấm thêm.
+    /// </summary>
+    [HttpPost("extract-cv")]
+    [RequestSizeLimit(15 * 1024 * 1024)]
+    public async Task<IActionResult> ExtractCv(Guid userId, IFormFile file,
+        [FromServices] FURPMS.Infrastructure.Services.CvExtractionService cv, CancellationToken ct)
+    {
+        var requesterId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var isAdminOrStaff = User.IsInRole("Admin") || User.IsInRole("Staff");
+        if (userId != requesterId && !isAdminOrStaff)
+            throw new UnauthorizedAccessException("Bạn chỉ điền được hồ sơ của chính mình.");
+        if (file == null || file.Length == 0)
+            throw new ArgumentException("Chưa chọn file CV.");
+
+        await using var stream = file.OpenReadStream();
+        var result = await cv.ExtractAsync(stream, file.FileName, file.ContentType, ct);
+        return Ok(ApiResponse<FURPMS.Application.DTOs.Users.ExtractedCvDto>.Ok(result));
+    }
+
+    /// <summary>Xuất lý lịch khoa học theo QĐ543 Biểu mẫu 02 (Word) — người dùng tự xuất, hoặc Admin/Staff.</summary>
+    [HttpGet("export-bm02")]
+    public async Task<IActionResult> ExportBm02(Guid userId, [FromServices] FURPMS.Application.Interfaces.Services.IDocumentExportService export)
+    {
+        var requesterId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var isAdminOrStaff = User.IsInRole("Admin") || User.IsInRole("Staff");
+        if (userId != requesterId && !isAdminOrStaff)
+            throw new UnauthorizedAccessException("Bạn chỉ xuất được lý lịch của chính mình.");
+        var (content, fileName) = await export.ExportAcademicCvDocAsync(userId);
+        return File(content, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", fileName);
+    }
+
     [HttpPut]
     public async Task<IActionResult> Upsert(Guid userId, [FromBody] AcademicProfileRequest request)
     {

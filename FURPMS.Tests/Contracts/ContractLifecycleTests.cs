@@ -926,6 +926,10 @@ public class ContractLifecycleTests
             AccountingClearedAt = DateOnly.FromDateTime(DateTime.UtcNow), AssetsClearedAt = DateOnly.FromDateTime(DateTime.UtcNow)
         };
         db.ContractSettlements.Add(created);
+        db.FinalReports.Add(new FinalReport
+        {
+            ProjectId = db.Contracts.Single().ProjectId, Status = "ARCHIVED", ArchivedAt = DateTime.UtcNow
+        });
         await db.SaveChangesAsync();
 
         var updated = await settlements.UpdateAsync(created.Id, new Application.DTOs.Settlements.CreateSettlementRequest

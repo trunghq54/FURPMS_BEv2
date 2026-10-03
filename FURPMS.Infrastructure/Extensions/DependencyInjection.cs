@@ -58,6 +58,7 @@ public static class DependencyInjection
         services.AddScoped<IProposalService, ProposalService>();
         services.AddScoped<IProposalDocumentService, ProposalDocumentService>();
         services.AddScoped<IProposalExtractionService, ProposalExtractionService>();
+        services.AddScoped<CvExtractionService>();
         services.AddScoped<IResearchOrderService, ResearchOrderService>();
         services.AddScoped<IReviewRoundService, ReviewRoundService>();
         services.AddScoped<IReviewBoardService, ReviewBoardService>();

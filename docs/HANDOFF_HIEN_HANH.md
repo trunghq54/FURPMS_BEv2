@@ -217,6 +217,45 @@ Thầy góp ý: cán bộ phòng không có chuyên môn để cho Đạt/Không
   đã có kết luận; `StatusBadge` tô màu PASS/CONDITIONAL/FAIL.
 - **Số 0 đứng đầu** ("05"): sửa chung trong `components/ui/input.tsx` — xem chi tiết dưới.
 
+### 1.4r Nghiệm thu không dùng điểm, ký BM13 phải lưu trữ trước, khôi phục HĐ, hồ sơ chuyên môn, AI đọc CV, xuất BM02 (03/10, đêm)
+
+- **Biên bản phiên nghiệm thu (`MinutesPanel`):**
+  - Phiếu phản biện hiện "đã nộp BM10" thay vì "80/100".
+  - Bỏ ô "Điểm trung bình" và dòng "điểm chỉ để tham khảo".
+  - Khung "Nhận xét của phản biện (Biểu mẫu 10)" in mọi nội dung theo mức 1–5 kèm chữ.
+  - Phiếu Không đạt (BM11) hiện lý do.
+  - "Điền từ phiếu chấm" ghi cả mức + lý do phiếu Không đạt.
+  - Nút "Điền từ hội đồng" đổi thành "Thêm dòng cho từng thành viên" và KHÔNG ghi đè ý kiến đã gõ (trước đây
+    thay cả danh sách).
+- **Phiếu phản biện (`RubricScoringForm`)** tắt mọi gợi ý AI. Hồ sơ nghiệm thu gồm nhiều file, AI chỉ đọc đề
+  cương — đây là hạn chế cần nêu trước hội đồng chấm đồ án.
+- **Ký BM13 phải lưu trữ trước** (`ContractSettlementService.SignAsync`, QĐ543 Điều 13.2): chặn khi báo cáo tổng
+  kết chưa ARCHIVED. Lưu trữ nhầm vẫn "Mở lại" được.
+- **Khôi phục hợp đồng đã chấm dứt:** `POST /api/contracts/{id}/restore` (lý do bắt buộc). Hợp đồng về ACTIVE, đề
+  tài về IN_PROGRESS, báo PI; dòng chấm dứt cũ vẫn trong sổ quyết định.
+- **Hồ sơ chuyên môn** (`components/shared/UserExpertiseProfile.tsx`):
+  - Nút thẻ cạnh mỗi ứng viên khi tạo hội đồng / thêm thành viên. Hiện lý lịch khoa học (ẩn ngày sinh, giới
+    tính, quê quán) và danh sách công trình BM02.
+  - KHÔNG có căn cước / ngân hàng.
+  - Admin → chi tiết người dùng có thêm danh sách công trình.
+- **AI đọc CV** (`CvExtractionService`, `POST /api/users/{id}/profile/extract-cv`):
+  - PDF/DOCX → điền sẵn form lý lịch khoa học; người dùng tự bấm Lưu.
+  - Công trình đọc được hiện thành danh sách, bấm "Thêm N công trình" mới ghi.
+  - Lọc chặt: học vị/giới tính chỉ nhận đúng giá trị của ô chọn; công trình phải đúng cặp mục–phân loại BM02.
+- **Xuất BM02 Lý lịch khoa học** (`ExportAcademicCvDocAsync`, `GET /api/users/{id}/profile/export-bm02`, nút ở
+  form lý lịch):
+  - Mục 1–8 lấy từ tài khoản + hồ sơ; mục 13–19 lấy từ công trình (số đếm lấy max với số đã khai tay).
+  - Mục 9–12 hệ thống không lưu nên để khung trống đúng mẫu.
+  - Không in căn cước.
+- **Phụ lục hợp đồng:** đánh số mục 4 liền mạch (trước nhảy 4.2 → 4.4 khi không cần Hiệu trưởng duyệt). Nút xuất
+  phụ lục đã có sẵn ở Staff (tab Điều chỉnh, chỉ khi đơn đã duyệt) và PI.
+- **Chưa làm, để đề xuất:**
+  - Công tắc tắt AI cho Admin (đụng ~10 chỗ, trong đó có rà trùng lúc nộp đề cương).
+  - Mở lại biên bản hội đồng đã khoá / huỷ ghi nhận ký HĐ / thu hồi đơn điều chỉnh đã duyệt / mở lại phiên đã
+    đóng: đều kéo theo đổi trạng thái đề tài dây chuyền, rủi ro cao trước bảo vệ.
+- Test 434 pass (mới: lưu trữ trước ký, khôi phục HĐ, đọc kết quả CV, xuất BM02).
+- Ảnh: `anh_giao_dien_moi/77`–`83`.
+
 ### 1.4q 🔴 Luồng sau vòng 1 theo QĐ543: giải ngân, lộ trình, quyết toán, lưu trữ (03/10, lần 3)
 
 - **Lỗi deploy:** đề tài ứng dụng chỉ có 1 đợt giải ngân, báo "Đợt 1 là đợt giải ngân CUỐI".

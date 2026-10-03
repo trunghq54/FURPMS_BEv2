@@ -11,4 +11,7 @@ public interface IContractService
     Task DeleteAsync(Guid contractId);
     Task<ContractDetailResponse> SignAsync(Guid contractId, Guid signedBy, DateOnly? signedOn = null);
     Task<ContractDetailResponse> TerminateAsync(Guid contractId, Guid terminatedBy, string reason);
+
+    /// <summary>Khôi phục hợp đồng chấm dứt nhầm — kèm lý do, ghi sổ quyết định.</summary>
+    Task<ContractDetailResponse> RestoreAsync(Guid contractId, Guid restoredBy, string reason);
 }

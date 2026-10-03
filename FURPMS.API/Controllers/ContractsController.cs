@@ -115,6 +115,17 @@ public class ContractsController : ControllerBase
         return Ok(ApiResponse<ContractDetailResponse>.Ok(result, "Đã ghi nhận chấm dứt hợp đồng."));
     }
 
+    // Khôi phục hợp đồng chấm dứt nhầm — lý do bắt buộc, ghi sổ quyết định.
+    [ProducesResponseType(typeof(ApiResponse<ContractDetailResponse>), StatusCodes.Status200OK)]
+    [HttpPost("{id:guid}/restore")]
+    [Authorize(Roles = "Admin,Staff")]
+    public async Task<IActionResult> Restore(Guid id, [FromBody] TerminateContractRequest request)
+    {
+        var (userId, _) = GetCaller();
+        var result = await _contracts.RestoreAsync(id, userId!.Value, request.Reason);
+        return Ok(ApiResponse<ContractDetailResponse>.Ok(result, "Đã khôi phục hợp đồng."));
+    }
+
     // ── Disbursements ─────────────────────────────────────────────────────────
 
     [ProducesResponseType(typeof(ApiResponse<IEnumerable<DisbursementResponse>>), StatusCodes.Status200OK)]

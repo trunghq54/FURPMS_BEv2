@@ -77,10 +77,30 @@ public class ContractClosureTests
         Assert.Contains("tài sản", ex.Message);
     }
 
+    /// <summary>Điều 13.2: chưa lưu trữ hồ sơ sau nghiệm thu thì chưa ký BM13 (03/10).</summary>
+    [Fact]
+    public async Task Sign_BeforeArchival_IsBlocked()
+    {
+        var (service, _, contract, staff) = await SetupAsync();
+        var settlement = await service.CreateAsync(contract.Id,
+            new CreateSettlementRequest { TotalContractedAmount = contract.TotalAmount });
+        await service.MarkAccountingClearedAsync(settlement.Id, new DateOnly(2026, 8, 19));
+        await service.MarkAssetsClearedAsync(settlement.Id, new DateOnly(2026, 8, 19));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.SignAsync(
+            settlement.Id, new SignSettlementRequest { SideASigneeId = staff.Id }));
+        Assert.Contains("Lưu trữ", ex.Message);
+    }
+
     [Fact]
     public async Task Sign_AfterAllClearance_SetsContractSettled()
     {
         var (service, db, contract, staff) = await SetupAsync();
+        db.FinalReports.Add(new FURPMS.Domain.Entities.Progress.FinalReport
+        {
+            ProjectId = contract.ProjectId, Status = FinalReportStatus.Archived, ArchivedAt = DateTime.UtcNow
+        });
+        await db.SaveChangesAsync();
         var settlement = await service.CreateAsync(contract.Id,
             new CreateSettlementRequest { TotalContractedAmount = contract.TotalAmount });
         await service.MarkAccountingClearedAsync(settlement.Id, new DateOnly(2026, 8, 19));

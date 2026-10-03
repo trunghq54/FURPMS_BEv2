@@ -178,6 +178,26 @@ public class ContractSigningTests
         Assert.Equal(ProjectStatus.Terminated, (await db.Projects.FindAsync(contract.ProjectId))!.Status);
     }
 
+    /// <summary>03/10: chấm dứt nhầm thì khôi phục được — hợp đồng Đang hiệu lực, đề tài Đang thực hiện, có lý do.</summary>
+    [Fact]
+    public async Task Restore_TerminatedContract_BackToActive_LogsReason()
+    {
+        var (svc, db, contract) = await SetupAsync();
+        AddSignedCopy(db, contract.Id);
+        await svc.SignAsync(contract.Id, Guid.NewGuid());
+        await svc.TerminateAsync(contract.Id, Guid.NewGuid(), "Quyết định dừng thử nghiệm");
+
+        await Assert.ThrowsAsync<ArgumentException>(() => svc.RestoreAsync(contract.Id, Guid.NewGuid(), " "));
+        var result = await svc.RestoreAsync(contract.Id, Guid.NewGuid(), "Chấm dứt nhầm hợp đồng");
+
+        Assert.Equal(ContractStatus.Active, result.Status);
+        Assert.Null(result.TerminatedAt);
+        Assert.Equal(ProjectStatus.InProgress, (await db.Projects.FindAsync(contract.ProjectId))!.Status);
+        Assert.Contains(db.ProjectDecisions, d => d.Reason == "Chấm dứt nhầm hợp đồng");
+        // Lần chấm dứt cũ vẫn còn trong sổ.
+        Assert.Contains(db.ProjectDecisions, d => d.DecisionType == FURPMS.Application.Constants.DecisionTypes.ContractTerminated);
+    }
+
     [Fact]
     public async Task Terminate_ActiveContract_RejectsVagueReason()
     {

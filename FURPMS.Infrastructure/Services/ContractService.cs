@@ -429,6 +429,54 @@ public class ContractService : IContractService
         return MapDetail(contract);
     }
 
+    /// <summary>
+    /// Khôi phục hợp đồng đã chấm dứt (03/10) — chấm dứt nhầm hợp đồng, hay Hiệu trưởng rút lại quyết định
+    /// đình chỉ (QĐ543 Điều 10.3). Hợp đồng về "Đang hiệu lực", đề tài về "Đang thực hiện". Lần chấm dứt
+    /// cũ KHÔNG bị xoá dấu vết: sổ quyết định giữ cả dòng chấm dứt lẫn dòng khôi phục kèm lý do.
+    /// </summary>
+    public async Task<ContractDetailResponse> RestoreAsync(Guid contractId, Guid restoredBy, string reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException("Khôi phục hợp đồng phải ghi lý do.");
+        var contract = await QueryWithProject()
+            .FirstOrDefaultAsync(c => c.Id == contractId)
+            ?? throw new KeyNotFoundException("Không tìm thấy hợp đồng.");
+        if (contract.Status != ContractStatus.Terminated)
+            throw new InvalidOperationException("Hợp đồng không ở trạng thái đã chấm dứt nên không có gì để khôi phục.");
+
+        contract.Status = ContractStatus.Active;
+        contract.TerminatedAt = null;
+        contract.TerminatedBy = null;
+        contract.TerminatedReason = null;
+        contract.UpdatedAt = _clock.UtcNow;
+        if (contract.Project.Status == ProjectStatus.Terminated)
+        {
+            contract.Project.Status = ProjectStatus.InProgress;
+            contract.Project.UpdatedAt = _clock.UtcNow;
+        }
+
+        _decisions.Log(
+            contract.ProjectId, DecisionTypes.ResultReopened,
+            $"Khôi phục hợp đồng {contract.ContractNumber} đã chấm dứt",
+            "Contract", contract.Id.ToString(),
+            result: "REOPENED", reason: reason.Trim(), documentNo: contract.ContractNumber,
+            decidedBy: restoredBy, decidedByRole: "Phòng QLKH");
+        await _contracts.SaveChangesAsync();
+
+        await _notifier.NotifyAsync(
+            contract.Project.PiUserId,
+            "CONTRACT_RESTORED",
+            "Hợp đồng nghiên cứu được khôi phục",
+            $"Hợp đồng {contract.ContractNumber} của đề tài \"{contract.Project.TitleVi}\" đã được khôi phục, " +
+            $"đề tài tiếp tục thực hiện. Lý do: {reason.Trim()}",
+            actionUrl: "/my-timeline",
+            entityType: "Contract",
+            entityId: contract.Id.ToString(),
+            priority: "HIGH");
+
+        return MapDetail(contract);
+    }
+
     private static ContractListResponse MapList(Contract c) => new()
     {
         Id = c.Id,
