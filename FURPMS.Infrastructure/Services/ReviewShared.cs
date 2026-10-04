@@ -16,41 +16,24 @@ internal static class ReviewShared
         string.Equals(roundType, "ACCEPTANCE", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Nghiệm thu là giai đoạn sau thực hiện đề tài, không phải một tab chấm song song với xét duyệt.
-    /// Toàn bộ đề tài đã đưa vào vòng REVIEW của lĩnh vực phải có kết quả cuối cùng; đề tài còn chờ/chỉnh sửa
-    /// hoặc đề cương đã nộp nhưng chưa được đưa vào xử lý đều làm luồng trước chưa khép lại.
+    /// Nghiệm thu xét THEO TỪNG ĐỀ TÀI (QĐ543 Điều 11–12): lĩnh vực chỉ cần có ít nhất một đề tài đã Đạt
+    /// xét duyệt. Điều kiện của từng đề tài (đã Đạt, báo cáo tổng kết đã được tiếp nhận) do
+    /// <see cref="AssertProjectEligibleForAcceptanceAsync"/> kiểm khi đưa đề tài vào phiên.
+    /// Trước 04/10 bắt mọi phiên xét duyệt của lĩnh vực phải chốt xong — một đề cương còn chờ sửa
+    /// là chặn nghiệm thu của cả lĩnh vực.
     /// </summary>
     public static async Task AssertAcceptanceTrackReadyAsync(
         IReviewRepository review, IProposalRepository proposals, int cycleTrackId)
     {
-        var reviewRounds = await review.ReviewRounds
-            .Where(r => r.CycleTrackId == cycleTrackId && r.RoundType == "REVIEW")
-            .Select(r => new
-            {
-                r.Status,
-                ProjectStatuses = r.ProjectRounds.Select(pr => pr.Status).ToList()
-            })
-            .ToListAsync();
+        var hasPassedProject = await review.ProjectRounds.AnyAsync(pr =>
+            pr.Round.CycleTrackId == cycleTrackId
+            && pr.Round.RoundType == "REVIEW"
+            && pr.Status == ReviewRoundStatus.Passed);
 
-        if (reviewRounds.Count == 0)
+        if (!hasPassedProject)
             throw new InvalidOperationException(
-                "Lĩnh vực này chưa có vòng XÉT DUYỆT ĐỀ CƯƠNG — chưa thể tạo hoặc mở vòng NGHIỆM THU.");
-
-        var hasUnfinishedReview = reviewRounds.Any(r =>
-            r.Status == ReviewRoundStatus.Pending
-            || r.Status == ReviewRoundStatus.Open
-            || r.ProjectStatuses.Any(s => s != ReviewRoundStatus.Passed && s != ReviewRoundStatus.Failed));
-        var hasUnprocessedProposal = await proposals.Query().IgnoreQueryFilters()
-            .AnyAsync(p => p.IsCurrent
-                           && !p.Project.IsDeleted
-                           && p.Project.CycleTrackId == cycleTrackId
-                           && (p.Status == ProposalStatus.Submitted
-                               || p.Status == ProposalStatus.RevisionRequired));
-
-        if (hasUnfinishedReview || hasUnprocessedProposal)
-            throw new InvalidOperationException(
-                "Vòng XÉT DUYỆT ĐỀ CƯƠNG chưa hoàn tất cho toàn bộ đề tài trong lĩnh vực — hãy chốt kết quả " +
-                "Đạt/Không đạt của tất cả đề tài trước khi tạo hoặc mở vòng NGHIỆM THU.");
+                "Lĩnh vực này chưa có đề tài nào Đạt vòng XÉT DUYỆT ĐỀ CƯƠNG — chưa thể tạo hoặc mở vòng NGHIỆM THU. " +
+                "Hãy chốt biên bản xét duyệt của ít nhất một đề tài trước.");
     }
 
     /// <summary>Chỉ hồ sơ đã qua REVIEW và đã được Staff duyệt báo cáo tổng kết mới đủ căn cứ đưa ra nghiệm thu.</summary>

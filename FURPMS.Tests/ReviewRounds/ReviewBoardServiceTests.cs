@@ -495,7 +495,7 @@ public class ReviewBoardServiceTests
         var error = await Assert.ThrowsAsync<InvalidOperationException>(
             () => service.AddProjectToRoundAsync(acceptanceRound.Id, project.Id));
 
-        Assert.Contains("chưa hoàn tất", error.Message);
+        Assert.Contains("chưa có đề tài nào Đạt", error.Message);
         Assert.False(await db.ProjectRounds.AnyAsync(x => x.RoundId == acceptanceRound.Id));
     }
 

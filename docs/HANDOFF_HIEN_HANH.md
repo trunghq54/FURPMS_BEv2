@@ -217,6 +217,21 @@ Thầy góp ý: cán bộ phòng không có chuyên môn để cho Đạt/Không
   đã có kết luận; `StatusBadge` tô màu PASS/CONDITIONAL/FAIL.
 - **Số 0 đứng đầu** ("05"): sửa chung trong `components/ui/input.tsx` — xem chi tiết dưới.
 
+### 1.4x Nới chặn nghiệm thu + ẩn "Cần chỉnh sửa" (04/10, ~6h)
+
+- **Chặn nghiệm thu theo TỪNG ĐỀ TÀI** (`ReviewShared.AssertAcceptanceTrackReadyAsync`): trước đây mọi
+  phiên xét duyệt của lĩnh vực phải chốt xong và không còn đề cương Đã nộp/Cần chỉnh sửa ⇒ một đề cương
+  kẹt (vd C1 THU2026-UD/AI) chặn nghiệm thu cả lĩnh vực. Nay lĩnh vực chỉ cần ≥1 đề tài Đạt xét duyệt;
+  từng đề tài vẫn qua `AssertProjectEligibleForAcceptanceAsync` (Đạt + BC tổng kết đã duyệt).
+- **FE `MinutesPanel`: bỏ lựa chọn "Cần chỉnh sửa"** ở biên bản. Lý do: màn chủ nhiệm chưa có nút nộp
+  bản sửa (`ProposalDetailPage` chỉ hiện Sửa khi DRAFT; wizard sau `PUT` không chuyển sang id bản mới)
+  và `RevisionDeadline` chỉ hiển thị, không có job chốt Không đạt ⇒ chọn vào là đề tài kẹt vĩnh viễn.
+  BE vẫn nhận `REVISION_REQUIRED` (dữ liệu cũ C1, test). Muốn bật lại: làm luồng nộp bản sửa trước.
+- **POST `/councils/{id}/feedback` lỗi 500** (FK `project_id` = Guid rỗng) — FE không gọi (BM10 đi qua
+  `/review-scoring/.../scores`), để sau.
+- Đã chạy trọn luồng chính qua API trên bản sao DB sạch (BE local, Staging): Bước 0→12, HĐ về SETTLED.
+  449/449 test pass.
+
 ### 1.4w Ba sửa nhỏ trước buổi bảo vệ (04/10, 0h)
 
 1. **Trang chấm của hội đồng** (`ProposalReviewWorkspace`): tab đang mở nằm trên URL (`?tab=info|scoring|acceptance|minutes`).
