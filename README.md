@@ -17,7 +17,7 @@ Built as capstone project **SU26SE053** at FPT University, against the universit
 | **Data** | PostgreSQL 16 + EF Core 8 · **65 entities** · 8 migrations |
 | **Tests** | **417 xUnit test cases** in 70 files, EF Core InMemory, GitHub Actions on every push and PR |
 | **Business rules** | **104 rules** catalogued and traced from regulation article to enforcing method to error code |
-| **Frontend** | React 19 + TypeScript SPA, 3 portals (Admin/Staff, PI, Reviewer) in a [separate repo](https://github.com/immanhdung/FURPMS-Web) |
+| **Frontend** | React 19 + TypeScript SPA, 4 portals (Admin, Staff, PI, Reviewer) in a [separate repo](https://github.com/immanhdung/FURPMS-Web) |
 | **Outputs** | Word/Excel documents matching the regulation's official forms (BM04, BM10, BM11, BM12, BM13) |
 
 ---
@@ -61,7 +61,7 @@ The interesting work is therefore not "add a table and a form", but deciding **w
 | Role | Portal | What they do |
 |---|---|---|
 | **Administrator** | Admin | Users, roles and permissions, master data (research types, expense categories, rubrics), system settings, audit log |
-| **Research Affairs staff** (Phòng QLKH) | Admin/Staff | Opens research cycles, sets deadlines, appoints councils, publishes decisions, manages contracts and disbursement records |
+| **Research Affairs staff** (Phòng QLKH) | Staff | Opens research cycles, sets deadlines, appoints councils, publishes decisions, manages contracts and disbursement records |
 | **Principal investigator** (chủ nhiệm) | PI | Drafts and submits the proposal, manages team and CV, reports progress, uploads evidence, follows the project timeline |
 | **Council member** (Chủ tịch / Thư ký / Phản biện / Ủy viên) | Reviewer | Reviews the proposal, scores against the rubric, writes comments, drafts and locks the minutes |
 
@@ -125,7 +125,7 @@ Every decision along that path (approval, rejection, revision request, deadline 
 ```mermaid
 flowchart TB
     subgraph CLIENT["Browser"]
-        SPA["React 19 SPA<br/>Admin/Staff · PI · Reviewer portals"]
+        SPA["React 19 SPA<br/>Admin · Staff · PI · Reviewer portals"]
     end
 
     subgraph API["FURPMS.API: ASP.NET Core 8"]
@@ -196,9 +196,9 @@ flowchart TB
 | Email | Brevo HTTPS API (SMTP relay blocked on the host) | Queue + background worker, 10 s send timeout |
 | Files | Cloudinary `raw` uploads or local disk | Chosen at startup from configuration |
 | Tests | xUnit 2.5.3, EF Core InMemory, coverlet | 417 cases, no database required in CI |
-| FE (other repo) | React 19, TypeScript, Vite, Tailwind 4, TanStack Query/Table, react-hook-form + Zod, Zustand, i18next, Radix UI, Recharts | 3 portals, Vietnamese/English |
+| FE (other repo) | React 19, TypeScript, Vite, Tailwind 4, TanStack Query/Table, react-hook-form + Zod, Zustand, i18next, Radix UI, Recharts | 4 portals, Vietnamese/English |
 | CI/CD | GitHub Actions (`restore` → `build Release` → `dotnet test`) | Pushes to `master`/`dev`/`dev1` and every pull request |
-| Deployment | Container (`FURPMS.API/Dockerfile`, multi-stage) + managed PostgreSQL; SPA on Vercel | The public API and SPA are no longer kept online; run locally with the steps below |
+| Deployment | Container (`FURPMS.API/Dockerfile`, multi-stage) + managed PostgreSQL; SPA on any static host (`vercel.json` included) | Neither is hosted now; run locally with the steps below |
 
 ## Engineering notes
 
@@ -251,7 +251,18 @@ dotnet run --project FURPMS.API
 # Swagger UI: http://localhost:5068/swagger
 ```
 
-**First login:** the seeder always creates `admin@furpms.edu.vn`. Its password comes from the `SeedAdminPassword` setting; if you do not set one, a random password is generated and **logged once** at startup. Demo accounts and sample projects are seeded **only in the Development environment**, so a production database never receives demo credentials.
+**Demo accounts.** `docker compose` brings up PostgreSQL only; the API seeds everything else on first start. In Development, `DatabaseSeeder` creates these accounts and resets their passwords to `password` on every startup, so they always work:
+
+| Role | Email |
+|---|---|
+| Administrator | `admin@furpms.edu.vn` |
+| Research Affairs staff | `staff.demo@furpms.edu.vn` |
+| Principal investigator | `pi.demo@furpms.edu.vn`, `pi2.demo@furpms.edu.vn` |
+| Council member | `reviewer1.demo@furpms.edu.vn` to `reviewer5.demo@furpms.edu.vn` |
+
+With `DEMO_DATA_ENABLED` on (the default in a fresh Development database) `DemoScenarioSeeder` adds the sample projects at each stage of the process, so the dashboards, councils, contracts and reports all have something to open. Switching that setting off stops both the reset and the sample data; the accounts and projects already in the database stay.
+
+Outside Development none of this happens. The single admin comes from `SeedAdminPassword`; without it a random password is generated and **logged once** at startup, and a production database never receives demo credentials. The password `password` is deliberately weak, so never leave `DEMO_DATA_ENABLED` on for an instance reachable from the internet.
 
 **Configuration.** `appsettings.json` in this repo carries local-development defaults (the database password matches `docker-compose.yml`, the JWT key is an obvious placeholder) so a fresh clone runs without setup. In any real deployment, override them with environment variables:
 
@@ -311,7 +322,7 @@ npm run dev          # http://localhost:5173 (expects the API on :5068)
 ```
 
 - React 19 + TypeScript + Vite, TanStack Query for server state, react-hook-form + Zod for forms, Zustand for session and UI state, Tailwind 4 with Radix primitives, Recharts for reporting.
-- Three portals from one codebase, with route guards built on the same role and permission model the API enforces: the UI hides what the API would reject, and the API still rejects it.
+- Four portals from one codebase, with route guards built on the same role and permission model the API enforces: the UI hides what the API would reject, and the API still rejects it.
 - Vietnamese/English i18n, `docx-preview` for document previews, and no direct storage URLs anywhere in the client.
 - The council/review, contract and disbursement screens are my work as well. The frontend repository belongs to a teammate, so the frontend architecture is a team contribution, not a solo one.
 
